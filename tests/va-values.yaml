@@ -1,0 +1,80 @@
+# yaml-language-server: $schema=https://github.com/epics-containers/ec-helm-charts/releases/download/4.0.0/argocd-apps.schema.json
+
+# This file configures an ArgoCD app of apps that represent a
+# group of beamline or accelerator IOCs and services. The configuration of the
+# services are in the separate repo indicated by repoURL.
+
+# This repostory only controls which services and which versions of those
+# services should be running on the cluster. It is recommended that this repo
+# be updated by a CI/CD pipeline or configuration tools only.
+
+project: accelerator
+destination:
+  name: acastus
+  namespace: accelerator
+source:
+  repoURL: 
+    https://gitlab.diamond.ac.uk/controls/containers/accelerator/va-services.git
+  targetRevision: main
+
+services:
+  # Each item is of the form:
+  #   service: service name as it appears in K8S (statefulset/deployment name)
+  #     targetRevision: optional override for targetRevision above
+  #     repoURL: optional override for git repo to source the helm chart from
+  #            the path is always services/<service> within that repo
+  #     removed: set to true to remove the service from the cluster
+  #     enabled: set to false to stop a service
+  va-epics-pvcs:
+  va-epics-opis:
+  va-epics-gateways:
+  sr03c-va-ioc-01:
+  sr04c-va-ioc-01:
+  sr05c-va-ioc-01:
+  sr06c-va-ioc-01:
+    enabled: true
+  sr07c-va-ioc-01:
+    enabled: true
+  sr10c-va-ioc-01:
+    enabled: true
+  sr11c-va-ioc-01:
+    enabled: true
+  sr12c-va-ioc-01:
+    enabled: true
+  sr13c-va-ioc-01:
+    enabled: true
+  sr14c-va-ioc-01:
+    enabled: true
+  sr15c-va-ioc-01:
+    enabled: true
+  sr16c-va-ioc-01:
+    enabled: true
+  sr17c-va-ioc-01:
+    enabled: true
+  sr18c-va-ioc-01:
+    enabled: true
+  sr08c-va-ioc-01:
+    enabled: true
+  sr09c-va-ioc-01:
+    enabled: true
+  sr19c-va-ioc-01:
+    enabled: true
+  sr20c-va-ioc-01:
+    enabled: true
+  sr24c-va-ioc-02:
+    enabled: true
+  sr21c-va-ioc-01:
+    enabled: true
+    targetRevision: 2026_sd3
+    labels:
+      description:
+  sr22c-va-ioc-01:
+    enabled: false
+    targetRevision: 2026_sd3
+    labels:
+      description:
+  sr23c-va-ioc-01:
+    enabled: true
+    targetRevision: 2026_sd3
+    labels:
+      description:

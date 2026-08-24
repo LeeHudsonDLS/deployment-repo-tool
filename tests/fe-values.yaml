@@ -1,0 +1,93 @@
+# yaml-language-server: $schema=https://github.com/epics-containers/ec-helm-charts/releases/download/4.0.0/argocd-apps.schema.json
+
+# This file configures an ArgoCD app of apps that represent a
+# group of beamline or accelerator IOCs and services. The configuration of the
+# services are in the separate repo indicated by repoURL.
+
+# This repostory only controls which services and which versions of those
+# services should be running on the cluster. It is recommended that this repo
+# be updated by a CI/CD pipeline or configuration tools only.
+
+project: accelerator
+destination:
+  name: acastus
+  namespace: accelerator
+source:
+  repoURL: 
+    https://gitlab.diamond.ac.uk/controls/containers/accelerator/fe-services.git
+  targetRevision: main
+
+services:
+  # Each item is of the form:
+  #   service: service name as it appears in K8S (statefulset/deployment name)
+  #     targetRevision: optional override for targetRevision above
+  #     repoURL: optional override for git repo to source the helm chart from
+  #            the path is always services/<service> within that repo
+  #     removed: set to true to remove the service from the cluster
+  #     enabled: set to false to stop a service
+  fe-epics-pvcs:
+  fe-epics-opis:
+  fe-epics-gateways:
+  fe-synoptic:
+    enabled: false
+  fe03i-cs-ioc-01:
+    enabled: true
+  fe03i-mo-ioc-01:
+    enabled: true
+  fe03i-py-ioc-01:
+    enabled: true
+  fe04i-cs-ioc-01:
+    enabled: true
+  fe04i-mo-ioc-01:
+    enabled: true
+  fe04i-py-ioc-01:
+    enabled: true
+  fe06i-cs-ioc-01:
+    enabled: true
+  fe06i-mo-ioc-01:
+    enabled: true
+  fe06i-py-ioc-01:
+    enabled: true
+  fe07i-cs-ioc-01:
+    enabled: true
+  fe07i-mo-ioc-01:
+    enabled: true
+  fe07i-py-ioc-01:
+    enabled: true
+  fe14i-cs-ioc-01:
+    enabled: true
+  fe15i-cs-ioc-01:
+    enabled: true
+  fe15i-mo-ioc-01:
+    enabled: true
+  fe15i-py-ioc-01:
+    enabled: true
+  fe18i-cs-ioc-01:
+    enabled: true
+  fe18i-mo-ioc-01:
+    enabled: true
+  fe18i-py-ioc-01:
+    enabled: true
+  fe19i-cs-ioc-01:
+    enabled: true
+  fe19i-mo-ioc-01:
+    enabled: true
+  fe19i-py-ioc-01:
+    enabled: true
+  fe24i-cs-ioc-01:
+    enabled: true
+  fe24i-mo-ioc-01:
+    enabled: true
+  fe24i-py-ioc-01:
+    enabled: true
+  fe22i-cs-ioc-01:
+    enabled: true
+    targetRevision: 2026_sd3
+    labels:
+      description:
+  fe11i-cs-ioc-01:
+    enabled: true
+    targetRevision: 2026_sd3
+    labels:
+      description:
+
