@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Start, stop or deploy one service in an ArgoCD "*-deployment" repo.
+"""Start, stop or deploy services in an ArgoCD "*-deployment" repo.
 
     deployment-repo-tool.py start sr22c-va-ioc-01
     deployment-repo-tool.py stop sr22c-va-ioc-01
@@ -12,11 +12,19 @@ first ("no matches found" in zsh):
     deployment-repo-tool.py stop 'fe15*'    # fe15i-cs-ioc-01, -mo-, -py-
     deployment-repo-tool.py start 'fe*'     # every fe service in the file
 
-The shorthand names listed at the bottom of --help stand in for the patterns
-used most often, so `stop cs` is `stop 'fe[0-9][0-9][ijkb]-cs-ioc-0[1-9]'`.
+Which repo is edited comes from the config file (see --list and the shorthand
+at the bottom of --help), in this order:
 
-Run it from anywhere inside the deployment repo. It edits the services block
-of apps/values.yaml, which looks like this:
+    the -r argument, a config key or a path
+    the current directory, if it is inside a *-deployment checkout
+    the service name: a shorthand belongs to the repo that defines it,
+        otherwise the [match] patterns in the config
+    [general] default in the config
+
+so it can be run from anywhere. The repo it picked, and why, is printed
+before anything is changed.
+
+It edits the services block of apps/values.yaml, which looks like this:
 
     services:
       sr06c-va-ioc-01:            # no keys: chart defaults, i.e. running
@@ -35,6 +43,7 @@ the standard library is used, so it runs on the system python.
 """
 
 import argparse
+import configparser
 import difflib
 import fnmatch
 import os
@@ -44,16 +53,7 @@ import sys
 
 VALUES = "apps/values.yaml"
 VERBS = {"start": "Starting", "stop": "Stopping", "deploy": "Deploying"}
-
-# Shorthand for the patterns typed most often. These are front end names: the
-# domain letter is lower case here because that is how the services are spelt
-# in values.yaml, even though the IOCs themselves are FE03I and friends.
-ALIASES = {
-    "all": "fe[0-9]*",
-    "cs": "fe[0-9][0-9][ijkb]-cs-ioc-0[1-9]",
-    "mo": "fe[0-9][0-9][ijkb]-mo-ioc-0[1-9]",
-    "py": "fe[0-9][0-9][ijkb]-py-ioc-0[1-9]",
-}
+CONFIG_NAME = "config.ini"
 
 
 def fail(message):
@@ -72,24 +72,135 @@ def git(root, *args):
         fail("git %s failed" % " ".join(args))
 
 
-def find_repo():
-    """Walk up from the cwd to the checkout we are in, and sanity check it.
+# ----------------------------------------------------------------- the config
 
-    The name test is the guard against doing this in the wrong repo by
-    mistake: the deployment repos are all called <area>-deployment. `.git` is
-    a file rather than a directory in a worktree, hence os.path.exists.
+
+def read_config(given):
+    """(parsed config, path it came from). Missing config is not an error.
+
+    With no config at all every section below comes back empty, which leaves
+    the tool working the way it did before there was one: on the repo the
+    current directory is in.
     """
+    home = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    here = os.path.dirname(os.path.abspath(__file__))
+    for path in (given, os.environ.get("DEPLOYMENT_REPO_CONFIG"),
+                 os.path.join(home, "deployment-repo-tool", CONFIG_NAME),
+                 os.path.join(here, CONFIG_NAME)):
+        if path and os.path.isfile(path):
+            # interpolation off: a % in a path or a glob is just a %.
+            config = configparser.ConfigParser(interpolation=None)
+            try:
+                config.read(path)
+            except configparser.Error as exc:
+                fail("%s: %s" % (path, exc))
+            return config, path
+    if given:
+        fail("no config file at %s" % given)
+    return configparser.ConfigParser(interpolation=None), None
+
+
+def section(config, name):
+    """A config section as a plain dict, empty if it is not there."""
+    return dict(config[name]) if config.has_section(name) else {}
+
+
+def expand(path):
+    return os.path.abspath(os.path.expanduser(os.path.expandvars(path)))
+
+
+def patterns(value):
+    """A comma or space separated list of globs."""
+    return [glob for glob in re.split(r"[,\s]+", value.strip()) if glob]
+
+
+# ------------------------------------------------------------- finding a repo
+
+
+def repo_from_cwd():
+    """The deployment repo the current directory is in, or None."""
     root = os.getcwd()
     while not os.path.exists(os.path.join(root, ".git")):
         parent = os.path.dirname(root)
         if parent == root:
-            fail("not inside a git repository")
+            return None
         root = parent
+    return root if "deployment" in os.path.basename(root).lower() else None
+
+
+def resolve_repo(config, wanted, service):
+    """Work out which repo to edit: (path, config key or None, why).
+
+    The reason is carried back so it can be printed: this now edits repos the
+    user is not standing in, so it has to say which one it picked and how.
+    """
+    repos = section(config, "repos")
+
+    if wanted:
+        if wanted in repos:
+            return expand(repos[wanted]), wanted, "-r %s" % wanted
+        if os.path.isdir(wanted):
+            return expand(wanted), None, "-r, as a path"
+        fail("no repo '%s' in the config; there is %s"
+             % (wanted, ", ".join(repos) if repos else "no [repos] section"))
+
+    # Standing in a checkout beats anything inferred: whoever cd'd in there
+    # meant that copy, not whichever one the config happens to point at.
+    here = repo_from_cwd()
+    if here:
+        key = next((k for k in repos if expand(repos[k]) == here), None)
+        return here, key, "current directory"
+
+    # A shorthand belongs to the repo that defines it, so `stop cs` needs no
+    # -r. If two repos define the same one, ask rather than guess.
+    owners = [key for key in repos if config.has_option("%s.aliases" % key, service)]
+    if len(owners) > 1:
+        fail("'%s' is a shorthand in %s - use -r to say which"
+             % (service, " and ".join(owners)))
+    if owners:
+        return (expand(repos[owners[0]]), owners[0],
+                "'%s' is a %s shorthand" % (service, owners[0]))
+
+    for key, value in section(config, "match").items():
+        for glob in patterns(value):
+            if fnmatch.fnmatchcase(service, glob):
+                if key not in repos:
+                    fail("[match] has '%s' but [repos] gives it no path" % key)
+                return expand(repos[key]), key, "'%s' matches %s" % (service, glob)
+
+    fallback = config.get("general", "default", fallback=None)
+    if fallback:
+        if fallback not in repos:
+            fail("[general] default is '%s', which is not in [repos]" % fallback)
+        return expand(repos[fallback]), fallback, "the configured default"
+
+    fail("cannot tell which repo '%s' belongs to - use -r, or cd into one%s"
+         % (service, ("; there is " + ", ".join(repos)) if repos else ""))
+
+
+def shorthand_hint(config, name, key):
+    """Where a name is a shorthand, for when it means nothing in this repo.
+
+    Typing `stop cs` in the va checkout otherwise gets the flat "no service
+    'cs'", which does not say that cs is a real thing somewhere else.
+    """
+    owners = [k for k in section(config, "repos")
+              if k != key and config.has_option("%s.aliases" % k, name)]
+    if not owners:
+        return ""
+    return ("\n  ('%s' is a shorthand in %s - try -r %s)"
+            % (name, ", ".join(owners), owners[0]))
+
+
+def check_repo(root, why):
+    """Refuse anything that is not a deployment repo, however we got here."""
     if "deployment" not in os.path.basename(root).lower():
-        fail("%s is not a deployment repo" % root)
+        fail("%s (%s) is not a deployment repo" % (root, why))
     if not os.path.isfile(os.path.join(root, VALUES)):
-        fail("%s has no %s" % (root, VALUES))
-    return root
+        fail("%s (%s) has no %s" % (root, why, VALUES))
+
+
+# ---------------------------------------------------------------- values.yaml
 
 
 def indent_of(line):
@@ -135,18 +246,18 @@ def find(lines, service):
     return None
 
 
-def select(lines, pattern):
+def select(lines, pattern, aliases):
     """The services a pattern picks out, in the order the file lists them.
 
-    A shorthand name from ALIASES becomes its pattern first. A plain name is
-    passed straight through even if the file has never heard of it, so that
-    deploy can add it; a glob only ever selects entries that are already
-    there.
+    A shorthand from the repo's aliases becomes its pattern first. A plain
+    name is passed straight through even if the file has never heard of it,
+    so that deploy can add it; a glob only ever selects entries that are
+    already there.
 
     Keys nested under an entry (`labels:`) look just like an entry, so only
     lines at the indent of the first one count as a service.
     """
-    glob = ALIASES.get(pattern, pattern)
+    glob = aliases.get(pattern, pattern)
     if not any(char in glob for char in "*?["):
         return [pattern]
     start, end = block(lines)
@@ -191,28 +302,71 @@ def set_key(lines, service, key, value):
     lines.insert(j, "%s%s: %s\n" % (" " * (indent_of(lines[i]) + 2), key, value))
 
 
+# ----------------------------------------------------------------------- main
+
+
+def shorthand_help(config):
+    """The [<repo>.aliases] sections, for the bottom of --help.
+
+    Built from the config so the help cannot drift from what is configured.
+    """
+    out = []
+    for name in config.sections():
+        if name.endswith(".aliases") and config[name]:
+            out.append("  %s:" % name[:-len(".aliases")])
+            out += ["    %-4s %s" % pair for pair in config[name].items()]
+    return "shorthand for SERVICE, by repo:\n" + "\n".join(out) if out else None
+
+
+def show_repos(config, config_path):
+    """--list: what is configured, and whether it is actually there."""
+    print("config  %s" % (config_path or "none found"))
+    repos = section(config, "repos")
+    if not repos:
+        return print("no [repos] section")
+    for key, path in repos.items():
+        root = expand(path)
+        state = "ok" if os.path.isfile(os.path.join(root, VALUES)) else "NOT THERE"
+        print("%-10s %-10s %s" % (key, state, root))
+
+
 def main():
+    config, config_path = read_config(None)
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
-        # Built from ALIASES so the help cannot drift from what the code does.
-        epilog="shorthand for SERVICE:\n" + "".join(
-            "  %-4s %s\n" % (name, glob) for name, glob in ALIASES.items()))
-    parser.add_argument("action", choices=("start", "stop", "deploy"))
-    parser.add_argument("service", metavar="SERVICE",
+        epilog=shorthand_help(config))
+    parser.add_argument("action", nargs="?", choices=("start", "stop", "deploy"))
+    parser.add_argument("service", metavar="SERVICE", nargs="?",
                         help="service name as it appears in %s, a quoted glob"
                              " like 'fe15*' to do several at once, or one of the"
                              " shorthand names below" % VALUES)
     parser.add_argument("revision", nargs="?", help="branch or tag, for deploy")
+    parser.add_argument("-r", "--repo", help="which deployment repo: a key from"
+                        " the config, or a path to a checkout")
+    parser.add_argument("--config", metavar="PATH", help="config file to use")
+    parser.add_argument("--list", action="store_true",
+                        help="show the configured repos and exit")
     parser.add_argument("--no-git", action="store_true",
                         help="edit the file only: no pull, commit or push")
     parser.add_argument("--dry-run", action="store_true",
                         help="show the change, write nothing")
     args = parser.parse_args()
+    # --config has to be read again now that argparse has seen it; the first
+    # read was only to build the shorthand list in --help.
+    if args.config:
+        config, config_path = read_config(args.config)
+    if args.list:
+        return show_repos(config, config_path)
+    if not args.action or not args.service:
+        parser.error("give an action and a service, e.g. stop sr22c-va-ioc-01")
     if args.action == "deploy" and not args.revision:
         parser.error("deploy needs a revision, e.g. deploy sr22c-va-ioc-01 2026_sd3")
 
-    root = find_repo()
+    root, key, why = resolve_repo(config, args.repo, args.service)
+    check_repo(root, why)
+    print("repo    %s%s  (%s)" % (key + "  " if key else "", root, why))
     path = os.path.join(root, VALUES)
+
     # Pull before reading, so the edit is made against what is really deployed.
     # --ff-only: if the branch has diverged, stop and let a human sort it out
     # rather than quietly building a merge on top of someone else's work.
@@ -227,7 +381,8 @@ def main():
         lines[-1] += "\n"
     before = list(lines)
 
-    targets = select(lines, args.service)
+    aliases = section(config, "%s.aliases" % key) if key else {}
+    targets = select(lines, args.service, aliases)
     if len(targets) > 1:
         print("%s: %s" % (args.action, ", ".join(targets)))
 
@@ -237,7 +392,8 @@ def main():
         # `  name:` line is a complete entry, and set_key fills in the rest.
         if find(lines, service) is None:
             if args.action != "deploy":
-                fail("no service '%s' in %s" % (service, VALUES))
+                fail("no service '%s' in %s%s"
+                     % (service, VALUES, shorthand_hint(config, service, key)))
             lines.insert(block(lines)[1], "  %s:\n" % service)
             print("adding a new entry for %s" % service)
 
