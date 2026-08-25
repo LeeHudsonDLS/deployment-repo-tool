@@ -97,6 +97,12 @@ coverage at all.
 
 ## Config in this repo
 
-`config.ini` here carries the author's own paths. It is a starting point to copy
-to `~/.config/deployment-repo-tool/config.ini`, which takes priority. Do not
-assume its paths exist on any other machine.
+The repo ships `config.ini.example`, carrying the author's own paths. It is a
+starting point to copy to `~/.config/deployment-repo-tool/config.ini`. The
+`.example` suffix is deliberate: the lookup chain only ever names `config.ini`,
+so a clone of this repo is inert and cannot be made to push to someone else's
+checkouts. `config.ini` is gitignored — never commit one. Do not assume the
+example's paths exist on any other machine.
+
+The test suite reads `config.ini.example` for `[match]` and the alias sections,
+so renaming or dropping it breaks `tests/test_tool.py`.

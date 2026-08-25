@@ -40,9 +40,10 @@ Clone it and put the script on your PATH, or alias it:
 alias dep=/path/to/deployment-repo-tool/deployment-repo-tool.py
 ```
 
-Then copy `config.ini` to `~/.config/deployment-repo-tool/config.ini` and set the
-paths to your own checkouts. The copy in the checkout is only a starting point —
-the one under `~/.config` takes priority, so your settings survive a `git pull`.
+Then copy `config.ini.example` to `~/.config/deployment-repo-tool/config.ini` and
+set the paths to your own checkouts. Nothing in the checkout is read as config —
+the example file is named so the tool ignores it, so a fresh clone cannot touch
+anyone else's repos — and your settings under `~/.config` survive a `git pull`.
 
 ## Usage
 
@@ -135,8 +136,9 @@ cs = fe[0-9][0-9][ijkb]-cs-ioc-0[1-9]
 
 Read from the first of: `--config`, `$DEPLOYMENT_REPO_CONFIG`,
 `$XDG_CONFIG_HOME/deployment-repo-tool/config.ini` (`~/.config` if unset), then
-`config.ini` beside the script. With no config at all it still works on whatever
-repo you are standing in.
+`config.ini` beside the script (gitignored; the repo ships only
+`config.ini.example`). With no config at all it still works on whatever repo you
+are standing in.
 
 ## Things that will catch you out
 

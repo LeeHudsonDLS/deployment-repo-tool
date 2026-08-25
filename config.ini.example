@@ -1,13 +1,17 @@
-# deployment-repo-tool configuration.
+# deployment-repo-tool configuration -- EXAMPLE. Copy it before editing.
 #
 # The first of these that exists is used:
 #   the --config argument
 #   $DEPLOYMENT_REPO_CONFIG
 #   $XDG_CONFIG_HOME/deployment-repo-tool/config.ini  (~/.config if unset)
-#   config.ini next to the script          <- this file
+#   config.ini next to the script
 #
-# So copying this to ~/.config/deployment-repo-tool/config.ini makes it your
-# own, and it takes priority over the copy in the checkout.
+# This file is config.ini.example, so none of those find it: a fresh clone is
+# inert and cannot push to anyone else's checkouts. Copy it to
+# ~/.config/deployment-repo-tool/config.ini and put your own paths in there.
+# A copy left next to the script as config.ini also works and is gitignored.
+#
+# The paths below are the author's; they will not exist on your machine.
 
 
 [repos]

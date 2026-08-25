@@ -35,7 +35,7 @@ VA = os.path.join(HERE, "va-values.yaml")
 FE = os.path.join(HERE, "fe-values.yaml")
 
 SHIPPED = configparser.ConfigParser(interpolation=None)
-SHIPPED.read(os.path.join(ROOT, "config.ini"))
+SHIPPED.read(os.path.join(ROOT, "config.ini.example"))
 
 fails = []
 

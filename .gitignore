@@ -1,0 +1,3 @@
+# Your own config, copied from config.ini.example. Never committed: it holds
+# paths to your checkouts and would otherwise be picked up by anyone cloning.
+config.ini
