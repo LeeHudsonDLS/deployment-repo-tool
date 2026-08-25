@@ -11,16 +11,20 @@
 # ~/.config/deployment-repo-tool/config.ini and put your own paths in there.
 # A copy left next to the script as config.ini also works and is gitignored.
 #
-# The paths below are the author's; they will not exist on your machine.
+# The [repos] paths below are placeholders. Everything under them -- the match
+# patterns and the shorthand -- is what is actually in use at DLS, and is worth
+# keeping as it stands.
 
 
 [repos]
 # key = where that deployment repo is checked out. ~ and $VARS are expanded.
-fe = /dls_sw/work/R3.14.12.7/support/jjc62351/containers/accelerator-repos/fe/fe-deployment
-va = /dls_sw/work/R3.14.12.7/support/jjc62351/containers/accelerator-repos/va/va-deployment
-id = /dls_sw/work/R3.14.12.7/support/jjc62351/containers/accelerator-repos/id/id-deployment
-common = /dls_sw/work/R3.14.12.7/support/jjc62351/containers/accelerator-repos/common/common-deployment
-secondary = /dls_sw/work/R3.14.12.7/support/jjc62351/containers/accelerator-repos/secondary/secondary-deployment
+# Replace each of these with a real path; they are read literally, so anything
+# left unedited simply shows as NOT THERE in --list.
+fe = /path/to/fe-deployment
+va = /path/to/va-deployment
+id = /path/to/id-deployment
+common = /path/to/common-deployment
+secondary = /path/to/secondary-deployment
 
 
 [match]
