@@ -8,24 +8,31 @@ restart or open a shell in a running one.
     deployment-repo-tool.py restart fe22i-mo-ioc-01
     deployment-repo-tool.py exec fe22i-mo-ioc-01
 
-The service can be a glob, which selects every matching entry in the file and
-puts them all in one commit. Quote it, or the shell will try to expand it
-first ("no matches found" in zsh):
+start, stop and deploy edit apps/values.yaml, then pull, commit and push.
+restart and exec change nothing at all: they act on the running pod, and are
+the ArgoCD web UI's pod delete and terminal.
+
+For start, stop and deploy the service can be a glob, selecting every matching
+entry in one commit. Quote it, or the shell expands it first ("no matches
+found" in zsh):
 
     deployment-repo-tool.py stop 'fe15*'    # fe15i-cs-ioc-01, -mo-, -py-
-    deployment-repo-tool.py start 'fe*'     # every fe service in the file
 
-Which repo is edited comes from the config file (see --list and the shorthand
-at the bottom of --help), in this order:
+Which repo is edited comes from the config (see --list), the first of:
 
-    the -r argument, a config key or a path
+    -r, either a config key or a path to a checkout
     the current directory, if it is inside a *-deployment checkout
-    the service name: a shorthand belongs to the repo that defines it,
-        otherwise the [match] patterns in the config
-    [general] default in the config
+    the service name: its shorthand's repo, else the [match] patterns
+    [general] default
 
-so it can be run from anywhere. The repo it picked, and why, is printed
-before anything is changed.
+so it runs from anywhere, and prints which repo it picked and why before
+changing anything.
+
+How it works
+------------
+
+--help stops at the line above: the rest of this is for reading in the file,
+not at a prompt.
 
 It edits the services block of apps/values.yaml, which looks like this:
 
@@ -39,11 +46,11 @@ start and stop set `enabled`. deploy sets `enabled: true` and the revision,
 creating the entry if the service is not listed yet. The file is then pulled,
 added, committed and pushed.
 
-restart and exec are the odd ones out and change nothing in the repo. Each
-hands the name to a shell script shipped beside this one: ioc-restart deletes
-the running pod and lets the StatefulSet recreate it, and ioc-exec opens a
-shell inside it -- the ArgoCD web UI's pod delete and terminal. There is no
-file to edit, so no repo has to be worked out for either.
+restart and exec each hand the service name to a shell script shipped beside
+this one: ioc-restart deletes the running pod and lets the StatefulSet
+recreate it, ioc-exec opens a shell inside it. They are shell scripts because
+reaching the cluster means sourcing the site's kubectl setup, which python
+cannot do to itself. There is no file to edit, so no repo is resolved either.
 
 values.yaml is edited as lines of text rather than loaded with a YAML library:
 there is no PyYAML on the machines this runs on, and re-dumping the document
@@ -398,16 +405,23 @@ def show_repos(config, config_path):
 
 def main():
     config, config_path = read_config(None)
+    # --help gets the top of the docstring only. Everything under "How it
+    # works" is reference for whoever opens the file, and printing it at a
+    # prompt turned --help into three screens.
     parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=__doc__.partition("\nHow it works\n")[0].rstrip(),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=shorthand_help(config))
     parser.add_argument("action", nargs="?",
-                        choices=("start", "stop", "deploy", "restart", "exec"))
+                        choices=("start", "stop", "deploy", "restart", "exec"),
+                        help="restart and exec act on the running pod and"
+                             " change nothing in the repo; the rest edit it")
     parser.add_argument("service", metavar="SERVICE", nargs="?",
                         help="service name as it appears in %s, a quoted glob"
                              " like 'fe15*' to do several at once, or one of the"
                              " shorthand names below" % VALUES)
-    parser.add_argument("revision", nargs="?", help="branch or tag, for deploy")
+    parser.add_argument("revision", nargs="?", help="branch or tag; deploy only,"
+                        " and refused by restart and exec")
     parser.add_argument("-r", "--repo", help="which deployment repo: a key from"
                         " the config, or a path to a checkout")
     parser.add_argument("--config", metavar="PATH", help="config file to use")
