@@ -1,0 +1,59 @@
+#!/bin/bash
+# Restart an IOC by deleting its pod; the StatefulSet controller recreates it.
+# Equivalent to deleting the pod in the ArgoCD web UI.
+
+set -euo pipefail
+
+NAMESPACE=${EC_TARGET:-accelerator}
+TIMEOUT=${IOC_RESTART_TIMEOUT:-120s}
+KLOGIN=${KLOGIN:-/dls_sw/kubernetes/klogin/1.0/acastus}
+
+usage() {
+    echo "Usage: ${0##*/} [-n NAMESPACE] <ioc-name>" >&2
+    echo "  e.g. ${0##*/} fe22i-mo-ioc-01" >&2
+    exit 1
+}
+
+while getopts ":n:h" opt; do
+    case $opt in
+        n) NAMESPACE=$OPTARG ;;
+        h) usage ;;
+        *) usage ;;
+    esac
+done
+shift $((OPTIND - 1))
+
+[[ $# -eq 1 ]] || usage
+ioc=$1
+
+# Put kubectl on PATH, unless the calling shell has already done it.
+if ! command -v kubectl >/dev/null 2>&1; then
+    if [[ ! -r $KLOGIN ]]; then
+        echo "kubectl not on PATH and cannot read $KLOGIN" >&2
+        echo "Set \$KLOGIN, or source your cluster setup before running." >&2
+        exit 1
+    fi
+    # klogin is not written to run under `set -eu`, so relax it while sourcing.
+    set +eu
+    # shellcheck disable=SC1090
+    source "$KLOGIN"
+    set -eu
+
+    command -v kubectl >/dev/null 2>&1 || {
+        echo "kubectl still not on PATH after sourcing $KLOGIN" >&2
+        exit 1
+    }
+fi
+
+# Fails loudly on a typo, rather than deleting nothing and looking successful.
+replicas=$(kubectl get statefulset "$ioc" -n "$NAMESPACE" -o jsonpath='{.spec.replicas}')
+
+if [[ $replicas == 0 ]]; then
+    echo "$ioc is stopped (replicas=0) - nothing to restart." >&2
+    echo "Start it with: kubectl scale statefulset $ioc -n $NAMESPACE --replicas=1" >&2
+    exit 1
+fi
+
+echo "Restarting $ioc in namespace $NAMESPACE ..."
+kubectl delete pod -n "$NAMESPACE" -l "app=$ioc"
+kubectl rollout status "statefulset/$ioc" -n "$NAMESPACE" --timeout="$TIMEOUT"

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Start, stop or deploy services in an ArgoCD "*-deployment" repo.
+"""Start, stop, deploy or restart services in an ArgoCD "*-deployment" repo.
 
     deployment-repo-tool.py start sr22c-va-ioc-01
     deployment-repo-tool.py stop sr22c-va-ioc-01
     deployment-repo-tool.py deploy sr22c-va-ioc-01 2026_sd3
+    deployment-repo-tool.py restart fe22i-mo-ioc-01
 
 The service can be a glob, which selects every matching entry in the file and
 puts them all in one commit. Quote it, or the shell will try to expand it
@@ -36,6 +37,12 @@ start and stop set `enabled`. deploy sets `enabled: true` and the revision,
 creating the entry if the service is not listed yet. The file is then pulled,
 added, committed and pushed.
 
+restart is the odd one out and changes nothing in the repo: it hands the name
+to the ioc-restart script that ships beside this one, which deletes the
+running pod and lets the StatefulSet recreate it -- the same thing as deleting
+the pod in the ArgoCD web UI. There is no file to edit, so no repo has to be
+worked out either.
+
 values.yaml is edited as lines of text rather than loaded with a YAML library:
 there is no PyYAML on the machines this runs on, and re-dumping the document
 would throw away the comments and ordering that make the file readable. Only
@@ -54,6 +61,7 @@ import sys
 VALUES = "apps/values.yaml"
 VERBS = {"start": "Starting", "stop": "Stopping", "deploy": "Deploying"}
 CONFIG_NAME = "config.ini"
+RESTART_SCRIPT = "ioc-restart"
 
 
 def fail(message):
@@ -302,6 +310,48 @@ def set_key(lines, service, key, value):
     lines.insert(j, "%s%s: %s\n" % (" " * (indent_of(lines[i]) + 2), key, value))
 
 
+# ----------------------------------------------------------------- restarting
+
+
+def restart(config, service, dry_run):
+    """Restart one service by handing its name to the ioc-restart script.
+
+    Nothing here touches the deployment repo. A restart deletes the running
+    pod and lets the StatefulSet recreate it, so there is no file to edit,
+    nothing to commit, and no repo to resolve. The script owns everything
+    about reaching the cluster -- finding kubectl, sourcing the klogin setup,
+    checking the service is really there -- and this only locates it.
+    """
+    # One at a time on purpose. Restarting a glob's worth of IOCs is not
+    # something to make this easy to do by accident.
+    if any(char in service for char in "*?["):
+        fail("restart takes one service, not a glob")
+
+    # The script ships beside this one, so normally there is nothing to
+    # configure. realpath, not abspath: the README suggests putting the tool on
+    # your PATH, which people do with a symlink, and the sibling has to be
+    # found through it. The config key is for keeping a modified copy elsewhere.
+    script = config.get("general", "restart_script", fallback=None)
+    if script:
+        script = expand(script)
+        if not os.path.isfile(script):
+            fail("[general] restart_script is %s, which is not there" % script)
+    else:
+        script = os.path.join(os.path.dirname(os.path.realpath(__file__)),
+                              RESTART_SCRIPT)
+        if not os.path.isfile(script):
+            fail("%s is missing from the checkout - restore it, or point"
+                 " [general] restart_script at a copy" % RESTART_SCRIPT)
+
+    if dry_run:
+        return print("would run: %s %s" % (script, service))
+
+    # Its exit status becomes ours, so a restart that failed cannot look like
+    # a success. Output is left on the terminal for the rollout progress.
+    sys.stdout.flush()
+    sys.exit(subprocess.call([script, service]))
+
+
 # ----------------------------------------------------------------------- main
 
 
@@ -335,7 +385,8 @@ def main():
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=shorthand_help(config))
-    parser.add_argument("action", nargs="?", choices=("start", "stop", "deploy"))
+    parser.add_argument("action", nargs="?",
+                        choices=("start", "stop", "deploy", "restart"))
     parser.add_argument("service", metavar="SERVICE", nargs="?",
                         help="service name as it appears in %s, a quoted glob"
                              " like 'fe15*' to do several at once, or one of the"
@@ -361,6 +412,11 @@ def main():
         parser.error("give an action and a service, e.g. stop sr22c-va-ioc-01")
     if args.action == "deploy" and not args.revision:
         parser.error("deploy needs a revision, e.g. deploy sr22c-va-ioc-01 2026_sd3")
+
+    # restart acts on the cluster, not the repo, so it takes none of what
+    # follows: no repo to pick, nothing to pull, edit, commit or push.
+    if args.action == "restart":
+        return restart(config, args.service, args.dry_run)
 
     root, key, why = resolve_repo(config, args.repo, args.service)
     check_repo(root, why)

@@ -354,6 +354,144 @@ check("resolve: --dry-run left the repos alone",
 shutil.rmtree(SANDBOX, ignore_errors=True)
 shutil.rmtree(BARE, ignore_errors=True)
 
+# --------------------------------------------------------------- the restart
+
+# restart shells out to a script that talks to a real cluster, so the script is
+# replaced with one that records how it was called. What is worth proving is
+# that the tool finds it, passes exactly the service name, reports its exit
+# status, and leaves the repo completely alone.
+
+RESTART = tempfile.mkdtemp(prefix="restart-")
+RECORD = os.path.join(RESTART, "argv")
+STUB = os.path.join(RESTART, "ioc-restart")
+with open(STUB, "w") as handle:
+    handle.write('#!/bin/bash\nprintf "%s\\n" "$@" > ' + RECORD + '\nexit ${STUB_EXIT:-0}\n')
+os.chmod(STUB, 0o755)
+
+RESTART_REPO = os.path.join(RESTART, "va-deployment")
+os.makedirs(os.path.join(RESTART_REPO, "apps"))
+os.makedirs(os.path.join(RESTART_REPO, ".git"))
+shutil.copy(VA, os.path.join(RESTART_REPO, "apps", "values.yaml"))
+
+restart_cfg = configparser.ConfigParser(interpolation=None)
+restart_cfg["repos"] = {"va": RESTART_REPO}
+restart_cfg["general"] = {"restart_script": STUB}
+RESTART_CFG = os.path.join(RESTART, "config.ini")
+with open(RESTART_CFG, "w") as handle:
+    restart_cfg.write(handle)
+
+
+def restart(*args, **kwargs):
+    if os.path.exists(RECORD):
+        os.remove(RECORD)
+    config = kwargs.get("config", RESTART_CFG)
+    return subprocess.run([sys.executable, TOOL, "--config", config] + list(args),
+                          cwd=kwargs.get("cwd", RESTART_REPO),
+                          env=dict(os.environ, **kwargs.get("env", {})),
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                          universal_newlines=True)
+
+
+def recorded():
+    if not os.path.exists(RECORD):
+        return None
+    with open(RECORD) as handle:
+        return handle.read().split()
+
+
+before_restart = open(os.path.join(RESTART_REPO, "apps", "values.yaml")).read()
+proc = restart("restart", "fe22i-mo-ioc-01")
+check("restart: the run succeeded", proc.returncode == 0, proc.stdout.strip()[-300:])
+check("restart: the script got exactly the service name",
+      recorded() == ["fe22i-mo-ioc-01"], recorded())
+check("restart: values.yaml was not touched",
+      open(os.path.join(RESTART_REPO, "apps", "values.yaml")).read() == before_restart)
+
+# A restart that failed must not report success, or a dead IOC looks restarted.
+proc = restart("restart", "fe22i-mo-ioc-01", env={"STUB_EXIT": "3"})
+check("restart: the script's exit status is passed on", proc.returncode == 3,
+      "got %d" % proc.returncode)
+
+proc = restart("--dry-run", "restart", "fe22i-mo-ioc-01")
+check("restart: --dry-run says what it would run",
+      "would run" in proc.stdout and "fe22i-mo-ioc-01" in proc.stdout,
+      proc.stdout.strip()[:200])
+check("restart: --dry-run ran nothing", recorded() is None, recorded())
+
+proc = restart("restart", "fe15*")
+check("restart: a glob is refused", proc.returncode != 0 and "not a glob" in proc.stdout,
+      proc.stdout.strip()[:200])
+check("restart: a refused glob ran nothing", recorded() is None, recorded())
+
+# No repo is resolved, so being nowhere near a checkout is fine.
+proc = restart("restart", "fe22i-mo-ioc-01", cwd=RESTART)
+check("restart: needs no deployment repo", proc.returncode == 0, proc.stdout.strip()[-200:])
+
+missing = configparser.ConfigParser(interpolation=None)
+missing["general"] = {"restart_script": os.path.join(RESTART, "not-there")}
+MISSING_CFG = os.path.join(RESTART, "missing.ini")
+with open(MISSING_CFG, "w") as handle:
+    missing.write(handle)
+proc = restart("restart", "fe22i-mo-ioc-01", config=MISSING_CFG)
+check("restart: a configured script that is not there is an error",
+      proc.returncode != 0 and "which is not there" in proc.stdout,
+      proc.stdout.strip()[:200])
+
+# With nothing configured the script is the one sitting beside the tool. That
+# must be exercised against a copy: the real sibling talks to a real cluster,
+# and a test run has no business deleting anyone's pod.
+BESIDE = os.path.join(RESTART, "beside")
+os.makedirs(BESIDE)
+COPIED_TOOL = os.path.join(BESIDE, "deployment-repo-tool.py")
+shutil.copy(TOOL, COPIED_TOOL)
+shutil.copy(STUB, os.path.join(BESIDE, "ioc-restart"))
+
+bare_restart = configparser.ConfigParser(interpolation=None)
+bare_restart["repos"] = {"va": RESTART_REPO}
+BARE_CFG = os.path.join(RESTART, "bare.ini")
+with open(BARE_CFG, "w") as handle:
+    bare_restart.write(handle)
+
+
+def beside(tool, **kwargs):
+    if os.path.exists(RECORD):
+        os.remove(RECORD)
+    return subprocess.run([sys.executable, tool, "--config", BARE_CFG,
+                           "restart", "fe22i-mo-ioc-01"],
+                          cwd=kwargs.get("cwd", RESTART_REPO),
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                          universal_newlines=True)
+
+
+proc = beside(COPIED_TOOL)
+check("restart: with nothing configured it uses the script beside the tool",
+      proc.returncode == 0 and recorded() == ["fe22i-mo-ioc-01"],
+      proc.stdout.strip()[:200])
+
+# Aliasing the tool is one way to install it; symlinking it onto PATH is the
+# other, and the sibling has to be found through the link rather than next to
+# it. abspath instead of realpath passes every check above and fails only here.
+LINKDIR = os.path.join(RESTART, "bin")     # deliberately has no ioc-restart in it
+os.makedirs(LINKDIR)
+LINKED = os.path.join(LINKDIR, "dep")
+os.symlink(COPIED_TOOL, LINKED)
+proc = beside(LINKED)
+check("restart: the sibling is found through a symlink to the tool",
+      proc.returncode == 0 and recorded() == ["fe22i-mo-ioc-01"],
+      proc.stdout.strip()[:200])
+
+ALONE = os.path.join(RESTART, "alone")     # a checkout with no ioc-restart in it
+os.makedirs(ALONE)
+shutil.copy(TOOL, os.path.join(ALONE, "deployment-repo-tool.py"))
+proc = beside(os.path.join(ALONE, "deployment-repo-tool.py"))
+check("restart: a missing sibling says both ways out",
+      proc.returncode != 0 and "restart_script" in proc.stdout,
+      proc.stdout.strip()[:200])
+
+check("restart: the shipped script is really there and executable",
+      os.access(os.path.join(ROOT, "ioc-restart"), os.X_OK))
+shutil.rmtree(RESTART, ignore_errors=True)
+
 # ------------------------------------------------------------------- the git
 
 GIT = tempfile.mkdtemp(prefix="git-")
