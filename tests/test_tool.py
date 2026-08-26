@@ -354,39 +354,51 @@ check("resolve: --dry-run left the repos alone",
 shutil.rmtree(SANDBOX, ignore_errors=True)
 shutil.rmtree(BARE, ignore_errors=True)
 
-# --------------------------------------------------------------- the restart
+# ----------------------------------------------------------- on the cluster
 
-# restart shells out to a script that talks to a real cluster, so the script is
+# restart and exec shell out to scripts that talk to a real cluster, so each is
 # replaced with one that records how it was called. What is worth proving is
-# that the tool finds it, passes exactly the service name, reports its exit
-# status, and leaves the repo completely alone.
+# that the tool picks the right script, passes exactly the service name,
+# reports its exit status, and leaves the repo completely alone.
+#
+# The mapping is written out again here rather than imported: the tool's
+# filename has a dash in it and will not import, and an independent statement
+# of what must exist is worth more in a test anyway.
 
-RESTART = tempfile.mkdtemp(prefix="restart-")
-RECORD = os.path.join(RESTART, "argv")
-STUB = os.path.join(RESTART, "ioc-restart")
-with open(STUB, "w") as handle:
-    handle.write('#!/bin/bash\nprintf "%s\\n" "$@" > ' + RECORD + '\nexit ${STUB_EXIT:-0}\n')
-os.chmod(STUB, 0o755)
+ACTIONS = {"restart": "ioc-restart", "exec": "ioc-exec"}
 
-RESTART_REPO = os.path.join(RESTART, "va-deployment")
-os.makedirs(os.path.join(RESTART_REPO, "apps"))
-os.makedirs(os.path.join(RESTART_REPO, ".git"))
-shutil.copy(VA, os.path.join(RESTART_REPO, "apps", "values.yaml"))
+CLUSTER = tempfile.mkdtemp(prefix="cluster-")
+RECORD = os.path.join(CLUSTER, "argv")
 
-restart_cfg = configparser.ConfigParser(interpolation=None)
-restart_cfg["repos"] = {"va": RESTART_REPO}
-restart_cfg["general"] = {"restart_script": STUB}
-RESTART_CFG = os.path.join(RESTART, "config.ini")
-with open(RESTART_CFG, "w") as handle:
-    restart_cfg.write(handle)
+CLUSTER_REPO = os.path.join(CLUSTER, "va-deployment")
+os.makedirs(os.path.join(CLUSTER_REPO, "apps"))
+os.makedirs(os.path.join(CLUSTER_REPO, ".git"))
+shutil.copy(VA, os.path.join(CLUSTER_REPO, "apps", "values.yaml"))
+
+# Each stub records which action it belongs to as well as its argv, so a run
+# that reached the wrong script cannot pass for the right one.
+STUBS = {}
+for action, name in ACTIONS.items():
+    STUBS[action] = os.path.join(CLUSTER, name)
+    with open(STUBS[action], "w") as handle:
+        handle.write('#!/bin/bash\nprintf "%s\\n" ' + action
+                     + ' "$@" > ' + RECORD + '\nexit ${STUB_EXIT:-0}\n')
+    os.chmod(STUBS[action], 0o755)
+
+cluster_cfg = configparser.ConfigParser(interpolation=None)
+cluster_cfg["repos"] = {"va": CLUSTER_REPO}
+cluster_cfg["general"] = dict(("%s_script" % a, STUBS[a]) for a in ACTIONS)
+CLUSTER_CFG = os.path.join(CLUSTER, "config.ini")
+with open(CLUSTER_CFG, "w") as handle:
+    cluster_cfg.write(handle)
 
 
-def restart(*args, **kwargs):
+def ran(*args, **kwargs):
     if os.path.exists(RECORD):
         os.remove(RECORD)
-    config = kwargs.get("config", RESTART_CFG)
-    return subprocess.run([sys.executable, TOOL, "--config", config] + list(args),
-                          cwd=kwargs.get("cwd", RESTART_REPO),
+    return subprocess.run([sys.executable, kwargs.get("tool", TOOL), "--config",
+                           kwargs.get("config", CLUSTER_CFG)] + list(args),
+                          cwd=kwargs.get("cwd", CLUSTER_REPO),
                           env=dict(os.environ, **kwargs.get("env", {})),
                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                           universal_newlines=True)
@@ -399,98 +411,114 @@ def recorded():
         return handle.read().split()
 
 
-before_restart = open(os.path.join(RESTART_REPO, "apps", "values.yaml")).read()
-proc = restart("restart", "fe22i-mo-ioc-01")
-check("restart: the run succeeded", proc.returncode == 0, proc.stdout.strip()[-300:])
-check("restart: the script got exactly the service name",
-      recorded() == ["fe22i-mo-ioc-01"], recorded())
-check("restart: values.yaml was not touched",
-      open(os.path.join(RESTART_REPO, "apps", "values.yaml")).read() == before_restart)
+helped = subprocess.run([sys.executable, TOOL, "--help"], stdout=subprocess.PIPE,
+                        universal_newlines=True).stdout
+for action in sorted(ACTIONS):
+    check("%s: the tool offers it as an action" % action, action in helped)
 
-# A restart that failed must not report success, or a dead IOC looks restarted.
-proc = restart("restart", "fe22i-mo-ioc-01", env={"STUB_EXIT": "3"})
-check("restart: the script's exit status is passed on", proc.returncode == 3,
-      "got %d" % proc.returncode)
+VALUES_PATH = os.path.join(CLUSTER_REPO, "apps", "values.yaml")
+for action in sorted(ACTIONS):
+    untouched = open(VALUES_PATH).read()
 
-proc = restart("--dry-run", "restart", "fe22i-mo-ioc-01")
-check("restart: --dry-run says what it would run",
-      "would run" in proc.stdout and "fe22i-mo-ioc-01" in proc.stdout,
-      proc.stdout.strip()[:200])
-check("restart: --dry-run ran nothing", recorded() is None, recorded())
+    proc = ran(action, "fe22i-mo-ioc-01")
+    check("%s: the run succeeded" % action, proc.returncode == 0,
+          proc.stdout.strip()[-300:])
+    check("%s: its own script got exactly the service name" % action,
+          recorded() == [action, "fe22i-mo-ioc-01"], recorded())
+    check("%s: values.yaml was not touched" % action,
+          open(VALUES_PATH).read() == untouched)
 
-proc = restart("restart", "fe15*")
-check("restart: a glob is refused", proc.returncode != 0 and "not a glob" in proc.stdout,
-      proc.stdout.strip()[:200])
-check("restart: a refused glob ran nothing", recorded() is None, recorded())
+    # A failure must not report success: a dead IOC would look restarted.
+    proc = ran(action, "fe22i-mo-ioc-01", env={"STUB_EXIT": "3"})
+    check("%s: the script's exit status is passed on" % action,
+          proc.returncode == 3, "got %d" % proc.returncode)
 
-# No repo is resolved, so being nowhere near a checkout is fine.
-proc = restart("restart", "fe22i-mo-ioc-01", cwd=RESTART)
-check("restart: needs no deployment repo", proc.returncode == 0, proc.stdout.strip()[-200:])
+    proc = ran("--dry-run", action, "fe22i-mo-ioc-01")
+    check("%s: --dry-run says what it would run" % action,
+          "would run" in proc.stdout and "fe22i-mo-ioc-01" in proc.stdout,
+          proc.stdout.strip()[:200])
+    check("%s: --dry-run ran nothing" % action, recorded() is None, recorded())
 
-missing = configparser.ConfigParser(interpolation=None)
-missing["general"] = {"restart_script": os.path.join(RESTART, "not-there")}
-MISSING_CFG = os.path.join(RESTART, "missing.ini")
-with open(MISSING_CFG, "w") as handle:
-    missing.write(handle)
-proc = restart("restart", "fe22i-mo-ioc-01", config=MISSING_CFG)
-check("restart: a configured script that is not there is an error",
-      proc.returncode != 0 and "which is not there" in proc.stdout,
-      proc.stdout.strip()[:200])
+    proc = ran(action, "fe15*")
+    check("%s: a glob is refused" % action,
+          proc.returncode != 0 and "not a glob" in proc.stdout,
+          proc.stdout.strip()[:200])
+    check("%s: a refused glob ran nothing" % action, recorded() is None, recorded())
 
-# With nothing configured the script is the one sitting beside the tool. That
-# must be exercised against a copy: the real sibling talks to a real cluster,
-# and a test run has no business deleting anyone's pod.
-BESIDE = os.path.join(RESTART, "beside")
+    # The third positional is deploy's revision. Silently ignoring it here
+    # would swallow a mistyped command.
+    proc = ran(action, "fe22i-mo-ioc-01", "2026_sd3")
+    check("%s: a stray extra argument is refused" % action,
+          proc.returncode != 0 and "only a service name" in proc.stdout,
+          proc.stdout.strip()[-200:])
+    check("%s: a refused extra argument ran nothing" % action,
+          recorded() is None, recorded())
+
+    # No repo is resolved, so being nowhere near a checkout is fine.
+    proc = ran(action, "fe22i-mo-ioc-01", cwd=CLUSTER)
+    check("%s: needs no deployment repo" % action, proc.returncode == 0,
+          proc.stdout.strip()[-200:])
+
+    absent = configparser.ConfigParser(interpolation=None)
+    absent["general"] = {"%s_script" % action: os.path.join(CLUSTER, "not-there")}
+    absent_cfg = os.path.join(CLUSTER, "absent-%s.ini" % action)
+    with open(absent_cfg, "w") as handle:
+        absent.write(handle)
+    proc = ran(action, "fe22i-mo-ioc-01", config=absent_cfg)
+    check("%s: a configured script that is not there is an error" % action,
+          proc.returncode != 0 and "which is not there" in proc.stdout,
+          proc.stdout.strip()[:200])
+
+# With nothing configured the scripts are the ones sitting beside the tool.
+# That must be exercised against a copy: the real siblings talk to a real
+# cluster, and a test run has no business deleting anyone's pod.
+BESIDE = os.path.join(CLUSTER, "beside")
 os.makedirs(BESIDE)
 COPIED_TOOL = os.path.join(BESIDE, "deployment-repo-tool.py")
 shutil.copy(TOOL, COPIED_TOOL)
-shutil.copy(STUB, os.path.join(BESIDE, "ioc-restart"))
+for action in ACTIONS:
+    shutil.copy(STUBS[action], os.path.join(BESIDE, ACTIONS[action]))
 
-bare_restart = configparser.ConfigParser(interpolation=None)
-bare_restart["repos"] = {"va": RESTART_REPO}
-BARE_CFG = os.path.join(RESTART, "bare.ini")
-with open(BARE_CFG, "w") as handle:
-    bare_restart.write(handle)
-
-
-def beside(tool, **kwargs):
-    if os.path.exists(RECORD):
-        os.remove(RECORD)
-    return subprocess.run([sys.executable, tool, "--config", BARE_CFG,
-                           "restart", "fe22i-mo-ioc-01"],
-                          cwd=kwargs.get("cwd", RESTART_REPO),
-                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                          universal_newlines=True)
-
-
-proc = beside(COPIED_TOOL)
-check("restart: with nothing configured it uses the script beside the tool",
-      proc.returncode == 0 and recorded() == ["fe22i-mo-ioc-01"],
-      proc.stdout.strip()[:200])
+bare_cluster = configparser.ConfigParser(interpolation=None)
+bare_cluster["repos"] = {"va": CLUSTER_REPO}
+BARE_CLUSTER_CFG = os.path.join(CLUSTER, "bare.ini")
+with open(BARE_CLUSTER_CFG, "w") as handle:
+    bare_cluster.write(handle)
 
 # Aliasing the tool is one way to install it; symlinking it onto PATH is the
 # other, and the sibling has to be found through the link rather than next to
-# it. abspath instead of realpath passes every check above and fails only here.
-LINKDIR = os.path.join(RESTART, "bin")     # deliberately has no ioc-restart in it
+# it. abspath instead of realpath passes every other check and fails only here,
+# so the link has to live somewhere with no helper scripts of its own.
+LINKDIR = os.path.join(CLUSTER, "bin")
 os.makedirs(LINKDIR)
 LINKED = os.path.join(LINKDIR, "dep")
 os.symlink(COPIED_TOOL, LINKED)
-proc = beside(LINKED)
-check("restart: the sibling is found through a symlink to the tool",
-      proc.returncode == 0 and recorded() == ["fe22i-mo-ioc-01"],
-      proc.stdout.strip()[:200])
 
-ALONE = os.path.join(RESTART, "alone")     # a checkout with no ioc-restart in it
+# A checkout the scripts are missing from.
+ALONE = os.path.join(CLUSTER, "alone")
 os.makedirs(ALONE)
-shutil.copy(TOOL, os.path.join(ALONE, "deployment-repo-tool.py"))
-proc = beside(os.path.join(ALONE, "deployment-repo-tool.py"))
-check("restart: a missing sibling says both ways out",
-      proc.returncode != 0 and "restart_script" in proc.stdout,
-      proc.stdout.strip()[:200])
+ALONE_TOOL = os.path.join(ALONE, "deployment-repo-tool.py")
+shutil.copy(TOOL, ALONE_TOOL)
 
-check("restart: the shipped script is really there and executable",
-      os.access(os.path.join(ROOT, "ioc-restart"), os.X_OK))
-shutil.rmtree(RESTART, ignore_errors=True)
+for action in sorted(ACTIONS):
+    proc = ran(action, "fe22i-mo-ioc-01", tool=COPIED_TOOL, config=BARE_CLUSTER_CFG)
+    check("%s: with nothing configured it uses the script beside the tool" % action,
+          proc.returncode == 0 and recorded() == [action, "fe22i-mo-ioc-01"],
+          proc.stdout.strip()[:200])
+
+    proc = ran(action, "fe22i-mo-ioc-01", tool=LINKED, config=BARE_CLUSTER_CFG)
+    check("%s: the sibling is found through a symlink to the tool" % action,
+          proc.returncode == 0 and recorded() == [action, "fe22i-mo-ioc-01"],
+          proc.stdout.strip()[:200])
+
+    proc = ran(action, "fe22i-mo-ioc-01", tool=ALONE_TOOL, config=BARE_CLUSTER_CFG)
+    check("%s: a missing sibling says both ways out" % action,
+          proc.returncode != 0 and "%s_script" % action in proc.stdout,
+          proc.stdout.strip()[:200])
+
+    check("%s: the shipped script is really there and executable" % action,
+          os.access(os.path.join(ROOT, ACTIONS[action]), os.X_OK))
+shutil.rmtree(CLUSTER, ignore_errors=True)
 
 # ------------------------------------------------------------------- the git
 

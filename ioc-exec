@@ -1,0 +1,69 @@
+#!/bin/bash
+# Open a shell inside a running IOC's pod.
+# Equivalent to the terminal in the ArgoCD web UI.
+
+set -euo pipefail
+
+NAMESPACE=${EC_TARGET:-accelerator}
+SHELL_CMD=${IOC_EXEC_SHELL:-bash}
+KLOGIN=${KLOGIN:-/dls_sw/kubernetes/klogin/1.0/acastus}
+
+usage() {
+    echo "Usage: ${0##*/} [-n NAMESPACE] [-s SHELL] <ioc-name>" >&2
+    echo "  e.g. ${0##*/} fe22i-mo-ioc-01" >&2
+    exit 1
+}
+
+while getopts ":n:s:h" opt; do
+    case $opt in
+        n) NAMESPACE=$OPTARG ;;
+        s) SHELL_CMD=$OPTARG ;;
+        h) usage ;;
+        *) usage ;;
+    esac
+done
+shift $((OPTIND - 1))
+
+[[ $# -eq 1 ]] || usage
+ioc=$1
+
+# Put kubectl on PATH, unless the calling shell has already done it.
+if ! command -v kubectl >/dev/null 2>&1; then
+    if [[ ! -r $KLOGIN ]]; then
+        echo "kubectl not on PATH and cannot read $KLOGIN" >&2
+        echo "Set \$KLOGIN, or source your cluster setup before running." >&2
+        exit 1
+    fi
+    # klogin is not written to run under `set -eu`, so relax it while sourcing.
+    set +eu
+    # shellcheck disable=SC1090
+    source "$KLOGIN"
+    set -eu
+
+    command -v kubectl >/dev/null 2>&1 || {
+        echo "kubectl still not on PATH after sourcing $KLOGIN" >&2
+        exit 1
+    }
+fi
+
+# Fails loudly on a typo. kubectl exec would too, but "statefulsets.apps not
+# found" buried in an exec error is a worse message than this one.
+replicas=$(kubectl get statefulset "$ioc" -n "$NAMESPACE" -o jsonpath='{.spec.replicas}')
+
+if [[ $replicas == 0 ]]; then
+    echo "$ioc is stopped (replicas=0) - there is no pod to exec into." >&2
+    echo "Start it with: kubectl scale statefulset $ioc -n $NAMESPACE --replicas=1" >&2
+    exit 1
+fi
+
+# Ask for a TTY only when there is one to give: with stdin redirected, -t makes
+# kubectl warn and mangles the output.
+tty_flags=-i
+[[ -t 0 ]] && tty_flags=-it
+
+# statefulset/NAME rather than NAME-0: kubectl resolves the controller to its
+# pod, so nothing here has to know how the pods are numbered.
+#
+# exec, so kubectl replaces this script: Ctrl-C and the shell's exit status
+# then belong to the remote shell rather than to a wrapper in between.
+exec kubectl exec "$tty_flags" -n "$NAMESPACE" "statefulset/$ioc" -- "$SHELL_CMD"

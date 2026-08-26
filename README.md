@@ -2,8 +2,8 @@
 
 Start, stop and deploy services in a Diamond ArgoCD `*-deployment` repo, without
 hand-editing `apps/values.yaml` and without getting the git dance wrong. It also
-restarts a running IOC, which is the one thing it does that leaves the repo
-alone.
+restarts a running IOC and opens a shell in one, which are the things it does
+that leave the repo alone.
 
 ```console
 $ deployment-repo-tool.py stop sr22c-va-ioc-01
@@ -32,8 +32,9 @@ anywhere, it works out which repo you meant.
 ## Requirements
 
 Standard library only, no packages to install. Written for the system python on
-the DLS RHEL8 machines (3.12); works on 3.8 and later. `restart` additionally
-needs the `ioc-restart` script kept beside it, and a working kubectl setup.
+the DLS RHEL8 machines (3.12); works on 3.8 and later. `restart` and `exec`
+additionally need the `ioc-restart` and `ioc-exec` scripts kept beside it, and a
+working kubectl setup.
 
 ## Installing
 
@@ -60,6 +61,7 @@ deployment-repo-tool.py ACTION SERVICE [REVISION] [options]
 | `stop` | `enabled: false` |
 | `deploy REVISION` | `enabled: true` and `targetRevision: REVISION`, adding the entry if the service is not listed yet |
 | `restart` | nothing — see below |
+| `exec` | nothing — see below |
 
 ```bash
 dep start sr22c-va-ioc-01
@@ -67,43 +69,45 @@ dep stop sr22c-va-ioc-01
 dep deploy sr22c-va-ioc-01 2026_sd3
 ```
 
-### Restarting
+### Restarting, and getting a shell
 
-`restart` is the odd one out: it changes nothing in the repo and makes no
-commit. It runs the `ioc-restart` script, which deletes the running pod and
-lets the StatefulSet recreate it — the same thing as deleting the pod in the
-ArgoCD web UI.
+`restart` and `exec` are the odd ones out: they change nothing in the repo and
+make no commit. They do what the ArgoCD web UI's pod delete and terminal do.
 
 ```bash
-dep restart fe22i-mo-ioc-01
+dep restart fe22i-mo-ioc-01   # delete the pod; the StatefulSet recreates it
+dep exec fe22i-mo-ioc-01      # a bash prompt inside the running pod
 ```
 
 Because nothing is edited, no repo has to be worked out, so `-r`, `--no-git`
 and the current directory are all irrelevant here. `--dry-run` prints the
 command instead of running it. The script's exit status becomes the tool's, so
-a failed restart fails the command.
+a failure fails the command.
 
 One service at a time — a glob is refused rather than restarting a beamline's
-worth of IOCs by accident. The script itself checks the name against the
-cluster, so a typo is an error rather than a silent no-op.
+worth of IOCs by accident. Both check the name against the cluster first, so a
+typo is an error rather than a silent no-op, and both say so rather than
+hanging if the IOC is stopped.
 
-`ioc-restart` ships in this repo beside `deployment-repo-tool.py` and is used
-from there, so there is nothing to configure and nothing extra to install.
-Symlinking the tool onto your PATH is fine — the sibling is found through the
-link. Set `restart_script` in `[general]` only to run a copy from somewhere
-else.
+`ioc-restart` and `ioc-exec` ship in this repo beside `deployment-repo-tool.py`
+and are used from there, so there is nothing to configure and nothing extra to
+install. Symlinking the tool onto your PATH is fine — the siblings are found
+through the link. Set `restart_script` or `exec_script` in `[general]` only to
+run a copy from somewhere else.
 
-It is a normal shell script and can be run on its own:
+They are normal shell scripts and work on their own:
 
 ```bash
 ./ioc-restart fe22i-mo-ioc-01
-./ioc-restart -n some-other-namespace fe22i-mo-ioc-01
+./ioc-exec fe22i-mo-ioc-01
+./ioc-exec -n some-other-namespace -s sh fe22i-mo-ioc-01
 ```
 
-It puts kubectl on PATH by sourcing the DLS cluster setup if your shell has not
-already done it (`KLOGIN` overrides where that lives), refuses to act on a name
-the cluster does not have, and says so rather than hanging if the IOC is
-stopped. The namespace comes from `$EC_TARGET`, defaulting to `accelerator`.
+Both put kubectl on PATH by sourcing the DLS cluster setup if your shell has not
+already done it (`KLOGIN` overrides where that lives). The namespace comes from
+`$EC_TARGET`, defaulting to `accelerator`. `ioc-exec` runs `bash`; `-s` or
+`$IOC_EXEC_SHELL` picks another, and it asks kubectl for a TTY only when it has
+one to give, so piping into it behaves.
 
 Options: `-r/--repo`, `--config PATH`, `--list`, `--no-git`, `--dry-run`.
 `--dry-run` touches nothing at all — no pull, no write, no commit.
@@ -174,7 +178,8 @@ cs = fe[0-9][0-9][ijkb]-cs-ioc-0[1-9]
 
 [general]
 # default = fe
-# restart_script = /path/to/ioc-restart   # only to override the shipped one
+# restart_script = /path/to/ioc-restart   # only to override the shipped ones
+# exec_script = /path/to/ioc-exec
 ```
 
 Read from the first of: `--config`, `$DEPLOYMENT_REPO_CONFIG`,

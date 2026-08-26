@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Start, stop, deploy or restart services in an ArgoCD "*-deployment" repo.
+"""Start, stop and deploy services in an ArgoCD "*-deployment" repo, and
+restart or open a shell in a running one.
 
     deployment-repo-tool.py start sr22c-va-ioc-01
     deployment-repo-tool.py stop sr22c-va-ioc-01
     deployment-repo-tool.py deploy sr22c-va-ioc-01 2026_sd3
     deployment-repo-tool.py restart fe22i-mo-ioc-01
+    deployment-repo-tool.py exec fe22i-mo-ioc-01
 
 The service can be a glob, which selects every matching entry in the file and
 puts them all in one commit. Quote it, or the shell will try to expand it
@@ -37,11 +39,11 @@ start and stop set `enabled`. deploy sets `enabled: true` and the revision,
 creating the entry if the service is not listed yet. The file is then pulled,
 added, committed and pushed.
 
-restart is the odd one out and changes nothing in the repo: it hands the name
-to the ioc-restart script that ships beside this one, which deletes the
-running pod and lets the StatefulSet recreate it -- the same thing as deleting
-the pod in the ArgoCD web UI. There is no file to edit, so no repo has to be
-worked out either.
+restart and exec are the odd ones out and change nothing in the repo. Each
+hands the name to a shell script shipped beside this one: ioc-restart deletes
+the running pod and lets the StatefulSet recreate it, and ioc-exec opens a
+shell inside it -- the ArgoCD web UI's pod delete and terminal. There is no
+file to edit, so no repo has to be worked out for either.
 
 values.yaml is edited as lines of text rather than loaded with a YAML library:
 there is no PyYAML on the machines this runs on, and re-dumping the document
@@ -61,7 +63,10 @@ import sys
 VALUES = "apps/values.yaml"
 VERBS = {"start": "Starting", "stop": "Stopping", "deploy": "Deploying"}
 CONFIG_NAME = "config.ini"
-RESTART_SCRIPT = "ioc-restart"
+# Actions carried out on the cluster instead of the repo, and the script that
+# does each. They are shell scripts because getting to the cluster means
+# sourcing the site's kubectl setup, which python cannot do to itself.
+HELPERS = {"restart": "ioc-restart", "exec": "ioc-exec"}
 
 
 def fail(message):
@@ -310,44 +315,55 @@ def set_key(lines, service, key, value):
     lines.insert(j, "%s%s: %s\n" % (" " * (indent_of(lines[i]) + 2), key, value))
 
 
-# ----------------------------------------------------------------- restarting
+# ------------------------------------------------------------- on the cluster
 
 
-def restart(config, service, dry_run):
-    """Restart one service by handing its name to the ioc-restart script.
+def helper(config, action):
+    """Where the shell script for a cluster action is.
 
-    Nothing here touches the deployment repo. A restart deletes the running
-    pod and lets the StatefulSet recreate it, so there is no file to edit,
-    nothing to commit, and no repo to resolve. The script owns everything
-    about reaching the cluster -- finding kubectl, sourcing the klogin setup,
-    checking the service is really there -- and this only locates it.
+    It ships beside this one, so normally there is nothing to configure.
+    realpath, not abspath: the README suggests putting the tool on your PATH,
+    which people do with a symlink, and the sibling has to be found through it.
+    The config key is for running a copy from somewhere else.
+    """
+    name = HELPERS[action]
+    key = "%s_script" % action
+    configured = config.get("general", key, fallback=None)
+    if configured:
+        script = expand(configured)
+        if not os.path.isfile(script):
+            fail("[general] %s is %s, which is not there" % (key, script))
+        return script
+
+    script = os.path.join(os.path.dirname(os.path.realpath(__file__)), name)
+    if not os.path.isfile(script):
+        fail("%s is missing from the checkout - restore it, or point"
+             " [general] %s at a copy" % (name, key))
+    return script
+
+
+def on_cluster(config, action, service, dry_run):
+    """Carry out a cluster action by handing the service name to its script.
+
+    Nothing here touches the deployment repo: restarting a pod or opening a
+    shell in one changes no file, so there is nothing to commit and no repo to
+    resolve. The scripts own everything about reaching the cluster -- finding
+    kubectl, sourcing the klogin setup, checking the service is really there --
+    and this only locates the right one.
     """
     # One at a time on purpose. Restarting a glob's worth of IOCs is not
-    # something to make this easy to do by accident.
+    # something to make easy to do by accident, and a shell in several pods at
+    # once is not a thing.
     if any(char in service for char in "*?["):
-        fail("restart takes one service, not a glob")
+        fail("%s takes one service, not a glob" % action)
 
-    # The script ships beside this one, so normally there is nothing to
-    # configure. realpath, not abspath: the README suggests putting the tool on
-    # your PATH, which people do with a symlink, and the sibling has to be
-    # found through it. The config key is for keeping a modified copy elsewhere.
-    script = config.get("general", "restart_script", fallback=None)
-    if script:
-        script = expand(script)
-        if not os.path.isfile(script):
-            fail("[general] restart_script is %s, which is not there" % script)
-    else:
-        script = os.path.join(os.path.dirname(os.path.realpath(__file__)),
-                              RESTART_SCRIPT)
-        if not os.path.isfile(script):
-            fail("%s is missing from the checkout - restore it, or point"
-                 " [general] restart_script at a copy" % RESTART_SCRIPT)
-
+    script = helper(config, action)
     if dry_run:
         return print("would run: %s %s" % (script, service))
 
-    # Its exit status becomes ours, so a restart that failed cannot look like
-    # a success. Output is left on the terminal for the rollout progress.
+    # Its exit status becomes ours, so a failure cannot look like a success.
+    # The terminal is left alone: rollout progress has to be readable, and for
+    # exec the remote shell needs the tty.
     sys.stdout.flush()
     sys.exit(subprocess.call([script, service]))
 
@@ -386,7 +402,7 @@ def main():
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=shorthand_help(config))
     parser.add_argument("action", nargs="?",
-                        choices=("start", "stop", "deploy", "restart"))
+                        choices=("start", "stop", "deploy", "restart", "exec"))
     parser.add_argument("service", metavar="SERVICE", nargs="?",
                         help="service name as it appears in %s, a quoted glob"
                              " like 'fe15*' to do several at once, or one of the"
@@ -413,10 +429,14 @@ def main():
     if args.action == "deploy" and not args.revision:
         parser.error("deploy needs a revision, e.g. deploy sr22c-va-ioc-01 2026_sd3")
 
-    # restart acts on the cluster, not the repo, so it takes none of what
-    # follows: no repo to pick, nothing to pull, edit, commit or push.
-    if args.action == "restart":
-        return restart(config, args.service, args.dry_run)
+    # These act on the cluster, not the repo, so they take none of what
+    # follows: no repo to pick, nothing to pull, edit, commit or push. The
+    # third positional is deploy's revision and means nothing here; catching
+    # it beats silently ignoring a mistyped command.
+    if args.action in HELPERS:
+        if args.revision:
+            parser.error("%s takes only a service name" % args.action)
+        return on_cluster(config, args.action, args.service, args.dry_run)
 
     root, key, why = resolve_repo(config, args.repo, args.service)
     check_repo(root, why)

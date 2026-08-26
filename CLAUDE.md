@@ -10,9 +10,10 @@ what it does; this file is about changing it.
 - **Standard library only.** It runs on the system python on DLS RHEL8
   machines, where nothing can be pip installed. There is no PyYAML. Do not add a
   dependency, do not split it into a package.
-- **One python file.** `deployment-repo-tool.py` stays a single script. The one
-  other file that ships is `ioc-restart`, a bash script `restart` shells out to;
-  it is not a second module and nothing imports it. Do not add a third.
+- **One python file.** `deployment-repo-tool.py` stays a single script. The
+  others that ship are `ioc-restart` and `ioc-exec`, bash scripts the cluster
+  actions shell out to; they are not modules and nothing imports them. A new
+  one is warranted only by a new cluster action, and the author decides that.
 - **Never load `values.yaml` with a YAML library, even if one becomes
   available.** Re-dumping the document destroys the comments, key order and
   spacing that make these files readable and reviewable, and the diff on every
@@ -57,25 +58,34 @@ Do not silently reverse these:
   kept and leaves no doubt what state a service was put in.
 - **git: `pull --ff-only`, and a pathspec on both `add` and `commit`.** Never
   merge or rebase on the user's behalf; never sweep up their other staged work.
-- **`restart` short-circuits before repo resolution.** It acts on the cluster,
-  not the repo: no pull, no edit, no commit, and nothing for `-r`, `--no-git` or
-  the current directory to influence. Resist the pull to route it through
-  `resolve_repo` for consistency's sake — there is no file to find.
-- **`restart` refuses a glob.** Batch restarting was explicitly not asked for,
-  and a whole beamline's IOCs going down at once is not a good accident.
-- **The restart script's exit status becomes the tool's**, so a failed restart
-  cannot report success.
-- **All cluster knowledge stays in `ioc-restart`.** Finding kubectl, sourcing
-  the klogin setup, checking the service exists, waiting for the rollout: none
-  of it belongs in here. This tool locates the script and passes one name.
-  `ioc-restart` stays runnable on its own — do not make it depend on being
+- **`restart` and `exec` short-circuit before repo resolution.** They act on the
+  cluster, not the repo: no pull, no edit, no commit, and nothing for `-r`,
+  `--no-git` or the current directory to influence. Resist the pull to route
+  them through `resolve_repo` for consistency's sake — there is no file to find.
+  `HELPERS` is the list of actions that work this way; adding a key to it and a
+  script beside the tool is all a new one needs.
+- **They refuse a glob.** Batch restarting was explicitly not asked for, and a
+  whole beamline's IOCs going down at once is not a good accident.
+- **They refuse a third positional.** It is `deploy`'s revision and means
+  nothing to them; ignoring it would swallow a mistyped command.
+- **The script's exit status becomes the tool's**, so a failure cannot report
+  success. `subprocess.call` with the terminal left attached, because `exec`
+  needs the tty for the remote shell.
+- **All cluster knowledge stays in the shell scripts.** Finding kubectl,
+  sourcing the klogin setup, checking the service exists, waiting for the
+  rollout: none of it belongs in the python, which locates a script and passes
+  one name. They stay runnable on their own — do not make them depend on being
   called by the python.
-- **The shipped `ioc-restart` is found via `realpath(__file__)`, not
-  `abspath`.** Installing the tool by symlinking it onto PATH is documented, and
-  under `abspath` the sibling is looked for next to the symlink instead of next
-  to the real file. `tests/test_tool.py` covers this; the check is worthless
-  unless the symlink lives in a directory with no `ioc-restart` in it, which is
-  how it was first written and why it initially passed under both.
+- **The kubectl/klogin preamble is duplicated between the two scripts, on
+  purpose.** Factoring it into a third, sourced-only file was offered and
+  turned down: each script stays independently runnable and obvious. If a bug
+  is found in that block, fix it in both.
+- **The shipped scripts are found via `realpath(__file__)`, not `abspath`.**
+  Installing the tool by symlinking it onto PATH is documented, and under
+  `abspath` the sibling is looked for next to the symlink instead of next to
+  the real file. `tests/test_tool.py` covers this; the check is worthless
+  unless the symlink lives in a directory with no helper scripts in it, which
+  is how it was first written and why it initially passed under both.
 
 ## Known limitations
 
@@ -111,10 +121,12 @@ temp directory and the tool is pointed at the copy with a generated `--config`;
 because a repo can be inferred from the service name, setting only the working
 directory is not enough to contain it.
 
-**Nor the real cluster.** The restart checks replace `ioc-restart` with a stub
-that records its argv. The sibling-lookup checks run against a *copy* of the
-tool in a temp directory with the stub beside it, because exercising that path
-against the real checkout would run the real script and delete a real pod.
+**Nor the real cluster.** The cluster checks replace each helper script with a
+stub that records its own action name and its argv — the action name is what
+catches a run that reached the wrong script. The sibling-lookup checks run
+against a *copy* of the tool in a temp directory with the stubs beside it,
+because exercising that path against the real checkout would run the real
+script and delete a real pod.
 
 Worth doing after a change to the editing logic: break something on purpose and
 confirm the suite goes red. Every property above was mutation-tested that way,
