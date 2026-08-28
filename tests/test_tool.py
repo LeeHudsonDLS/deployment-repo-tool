@@ -5,7 +5,15 @@
 # ///
 """Tests for deployment-repo-tool.
 
-    uv run tests/test_tool.py                 # or --python 3.8 to check that too
+    make test                  # builds the binary first, then runs this
+    uv run tests/test_tool.py  # if it is already built
+
+The tool itself is C++; this drives the built binary as a black box, which is
+the level worth testing it at -- what it does to a values.yaml and to a git
+repo. The pieces underneath (globbing, the ini parser, the diff) have their own
+tests in tests/unit.cpp, run by `make check`. Python here because the check that
+matters needs a real YAML parser, and because a test suite that cannot share the
+tool's own mistakes is worth more than one that can.
 
 Every edit is checked by loading the result with a real YAML parser and
 comparing it against the original: the tool writes YAML by hand, so the thing
@@ -30,9 +38,12 @@ import yaml
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-TOOL = os.path.join(ROOT, "deployment-repo-tool.py")
+TOOL = os.path.join(ROOT, "deployment-repo-tool")
 VA = os.path.join(HERE, "va-values.yaml")
 FE = os.path.join(HERE, "fe-values.yaml")
+
+if not os.access(TOOL, os.X_OK):
+    sys.exit("no binary at %s - run make first" % TOOL)
 
 SHIPPED = configparser.ConfigParser(interpolation=None)
 SHIPPED.read(os.path.join(ROOT, "config.ini.example"))
@@ -67,7 +78,7 @@ def write_config(root, key):
 
 
 def run(root, *args, **kwargs):
-    argv = [sys.executable, TOOL]
+    argv = [TOOL]
     if not kwargs.get("with_git"):
         argv.append("--no-git")
     config = kwargs.get("config") or os.path.join(root, "config.ini")
@@ -227,7 +238,12 @@ case("shorthand that matches nothing here", ["stop", "cs"], [], expect_fail=True
 # ----------------------------------------------------------- must be refused
 
 case("unknown service", ["stop", "sr99c-va-ioc-01"], [], expect_fail=True)
-case("bad action", ["restart", "sr21c-va-ioc-01"], [], expect_fail=True)
+# A name that is not an action at all. It used to say "restart", from before
+# restart was one -- which by the time it was, meant this case was reaching the
+# real ioc-restart beside the tool and only passing because the machine running
+# the tests had no kubectl. The cluster actions are covered further down,
+# against stubs.
+case("bad action", ["frobnicate", "sr21c-va-ioc-01"], [], expect_fail=True)
 case("deploy with no revision", ["deploy", "sr21c-va-ioc-01"], [], expect_fail=True)
 case("no arguments", [], [], expect_fail=True)
 
@@ -298,7 +314,7 @@ with open(RESOLVE_CFG, "w") as handle:
 
 
 def spoke(argv, cwd=SANDBOX, config=RESOLVE_CFG, env=None):
-    proc = subprocess.run([sys.executable, TOOL, "--dry-run"]
+    proc = subprocess.run([TOOL, "--dry-run"]
                           + (["--config", config] if config else []) + argv,
                           cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                           universal_newlines=True, env=env)
@@ -338,10 +354,10 @@ says("--list shows each repo and its state", ["--list"], "fe         ok")
 # With no config at all it must still work the way it did before there was one:
 # on the repo the current directory is in.
 BARE = tempfile.mkdtemp(prefix="bare-")
-shutil.copy(TOOL, os.path.join(BARE, "tool.py"))
+shutil.copy(TOOL, os.path.join(BARE, "tool"))
 bare_env = dict(os.environ, XDG_CONFIG_HOME=BARE)
 bare_env.pop("DEPLOYMENT_REPO_CONFIG", None)
-bare = subprocess.run([sys.executable, os.path.join(BARE, "tool.py"), "--dry-run",
+bare = subprocess.run([os.path.join(BARE, "tool"), "--dry-run",
                        "stop", "sr21c-va-ioc-01"], cwd=VA_REPO, env=bare_env,
                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                       universal_newlines=True)
@@ -396,7 +412,7 @@ with open(CLUSTER_CFG, "w") as handle:
 def ran(*args, **kwargs):
     if os.path.exists(RECORD):
         os.remove(RECORD)
-    return subprocess.run([sys.executable, kwargs.get("tool", TOOL), "--config",
+    return subprocess.run([kwargs.get("tool", TOOL), "--config",
                            kwargs.get("config", CLUSTER_CFG)] + list(args),
                           cwd=kwargs.get("cwd", CLUSTER_REPO),
                           env=dict(os.environ, **kwargs.get("env", {})),
@@ -411,7 +427,7 @@ def recorded():
         return handle.read().split()
 
 
-helped = subprocess.run([sys.executable, TOOL, "--help"], stdout=subprocess.PIPE,
+helped = subprocess.run([TOOL, "--help"], stdout=subprocess.PIPE,
                         universal_newlines=True).stdout
 for action in sorted(ACTIONS):
     check("%s: the tool offers it as an action" % action, action in helped)
@@ -474,7 +490,7 @@ for action in sorted(ACTIONS):
 # cluster, and a test run has no business deleting anyone's pod.
 BESIDE = os.path.join(CLUSTER, "beside")
 os.makedirs(BESIDE)
-COPIED_TOOL = os.path.join(BESIDE, "deployment-repo-tool.py")
+COPIED_TOOL = os.path.join(BESIDE, "deployment-repo-tool")
 shutil.copy(TOOL, COPIED_TOOL)
 for action in ACTIONS:
     shutil.copy(STUBS[action], os.path.join(BESIDE, ACTIONS[action]))
@@ -497,7 +513,7 @@ os.symlink(COPIED_TOOL, LINKED)
 # A checkout the scripts are missing from.
 ALONE = os.path.join(CLUSTER, "alone")
 os.makedirs(ALONE)
-ALONE_TOOL = os.path.join(ALONE, "deployment-repo-tool.py")
+ALONE_TOOL = os.path.join(ALONE, "deployment-repo-tool")
 shutil.copy(TOOL, ALONE_TOOL)
 
 for action in sorted(ACTIONS):

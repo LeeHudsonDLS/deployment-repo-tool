@@ -6,7 +6,7 @@ restarts a running IOC and opens a shell in one, which are the things it does
 that leave the repo alone.
 
 ```console
-$ deployment-repo-tool.py stop sr22c-va-ioc-01
+$ deployment-repo-tool stop sr22c-va-ioc-01
 repo    va  /path/to/va-deployment  ('sr22c-va-ioc-01' matches sr*-va-ioc-*)
 Already up to date.
 --- apps/values.yaml
@@ -31,18 +31,27 @@ anywhere, it works out which repo you meant.
 
 ## Requirements
 
-Standard library only, no packages to install. Written for the system python on
-the DLS RHEL8 machines (3.12); works on 3.8 and later. `restart` and `exec`
-additionally need the `ioc-restart` and `ioc-exec` scripts kept beside it, and a
-working kubectl setup.
+C++17 and make to build it; nothing at all to run it. It is one binary with no
+interpreter, no packages and no environment to go wrong underneath it — which is
+why it is not a python script any more. The gcc that ships with RHEL8 (8.5) is
+enough, and the C++ runtime is linked in rather than loaded.
+
+`restart` and `exec` additionally need the `ioc-restart` and `ioc-exec` scripts
+kept beside it, and a working kubectl setup.
 
 ## Installing
 
-Clone it and put the script on your PATH, or alias it:
+Clone it, build it, and put the binary on your PATH or alias it:
 
 ```bash
-alias dep=/path/to/deployment-repo-tool/deployment-repo-tool.py
+make
+alias dep=/path/to/deployment-repo-tool/deployment-repo-tool
 ```
+
+The binary is built at the top of the checkout, beside `ioc-restart` and
+`ioc-exec`, which is where it looks for them — through a symlink if you put one
+on your PATH. `make clean` removes it and the `build/` directory; neither is
+committed.
 
 Then copy `config.ini.example` to `~/.config/deployment-repo-tool/config.ini` and
 set the paths to your own checkouts. Nothing in the checkout is read as config —
@@ -52,7 +61,7 @@ anyone else's repos — and your settings under `~/.config` survive a `git pull`
 ## Usage
 
 ```
-deployment-repo-tool.py ACTION SERVICE [REVISION] [options]
+deployment-repo-tool ACTION SERVICE [REVISION] [options]
 ```
 
 | Action | What it writes |
@@ -89,7 +98,7 @@ worth of IOCs by accident. Both check the name against the cluster first, so a
 typo is an error rather than a silent no-op, and both say so rather than
 hanging if the IOC is stopped.
 
-`ioc-restart` and `ioc-exec` ship in this repo beside `deployment-repo-tool.py`
+`ioc-restart` and `ioc-exec` ship in this repo beside the built binary
 and are used from there, so there is nothing to configure and nothing extra to
 install. Symlinking the tool onto your PATH is fine — the siblings are found
 through the link. Set `restart_script` or `exec_script` in `[general]` only to
@@ -218,14 +227,19 @@ refuses, 2 for a bad command line.
 ## Tests
 
 ```bash
-uv run tests/test_tool.py                # ~223 checks, a few seconds
-uv run --python 3.8 tests/test_tool.py   # oldest supported python
+make check   # tests/unit.cpp, ~100 checks, instant
+make test    # those, then tests/test_tool.py: 257 checks, a few seconds
 ```
 
-The test file declares its own dependency on PyYAML in a PEP 723 header, so uv
+`make check` covers the parts written out by hand because C++ has no standard
+library equivalent — globbing, path handling, the ini parser, the diff.
+`tests/test_tool.py` drives the built binary as a black box and reloads every
+edit with a real YAML parser to prove the document still means what it should.
+
+That file declares its own dependency on PyYAML in a PEP 723 header, so uv
 handles it — nothing to install, and no virtualenv is left in the repo. Without
 uv: `pip install pyyaml && python3 tests/test_tool.py`.
 
-Everything runs against temporary copies of the fixtures in `tests/`, and the
-git flow against a local bare remote. Your real deployment repos are never
-touched.
+Everything runs against temporary copies of the fixtures in `tests/`, the git
+flow against a local bare remote, and the cluster actions against stub scripts.
+Your real deployment repos and the real cluster are never touched.

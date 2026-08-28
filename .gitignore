@@ -1,3 +1,8 @@
 # Your own config, copied from config.ini.example. Never committed: it holds
 # paths to your checkouts and would otherwise be picked up by anyone cloning.
 config.ini
+
+# Build output. The binary lives at the top of the checkout so that it sits
+# beside ioc-restart and ioc-exec, which is where it looks for them.
+/deployment-repo-tool
+/build/
