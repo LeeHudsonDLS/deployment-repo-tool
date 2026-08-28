@@ -8,7 +8,7 @@ what it does; this file is about changing it.
 It is C++ in `src/`, built by `make` into a binary at the top of the checkout.
 It was a single python script until the author asked for it in C++: python
 environments on the DLS machines change underneath it, and a compiled binary
-with the C++ runtime linked in cannot be broken by one. Everything below that is
+cannot be broken by one. Everything below that is
 not about the language is unchanged from that script, on purpose — the
 behaviour was ported line for line, and `tests/test_tool.py` passed unmodified
 except for running the binary instead of the interpreter.
@@ -18,6 +18,12 @@ except for running the binary instead of the interpreter.
 - **Standard library only.** No third-party libraries, no package manager, no
   vendored code. `make` and a compiler is the whole toolchain, and that is the
   point: nothing to install, nothing to keep up to date, nothing to go missing.
+  That includes build-time extras: `-static-libstdc++` is worth having and is
+  used when it works, but the Makefile probes for it rather than requiring it,
+  because RHEL8 keeps `libstdc++.a` in a `libstdc++-static` package that is
+  usually not installed. A build that needs a package installed first is the
+  thing this tool is not supposed to be. Do not turn the probe into a
+  requirement.
 - **It must build with the gcc that ships with RHEL8** — 8.5, C++17. Verified
   there and with gcc 13. Notably that means no `<filesystem>`: it is a
   separately linked library on gcc 8. The path handling in `paths.h` is POSIX
@@ -76,6 +82,15 @@ Do not silently reverse these:
   checkout, that is the repo, even when `[match]` would point elsewhere.
   Inference-first was tried and rejected: standing in your own clone and having
   the tool edit and push from a different one is a foot-gun.
+- **But only a checkout with an `apps/values.yaml` in it counts.** Having the
+  file is what makes a directory a deployment repo; the name test alone is not
+  enough, because this tool's own source tree is called `deployment-repo-tool`
+  and passes it. Standing in the checkout you just cloned and built — the
+  documented way to install it — used to claim the command and then refuse it
+  for having nothing to edit. The trade is that a genuine `*-deployment`
+  checkout missing its `apps/values.yaml` now falls through to inference
+  instead of erroring; it is not a usable checkout either way, and `check_repo`
+  still catches one named explicitly with `-r`.
 - **Shorthand lives in the config, not the code.** It used to be a table in the
   source. `[<repo>.aliases]` keeps site conventions out of the tool, and the
   `--help` epilog is built from whatever config is loaded so the two cannot

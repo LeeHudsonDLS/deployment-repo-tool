@@ -34,7 +34,12 @@ anywhere, it works out which repo you meant.
 C++17 and make to build it; nothing at all to run it. It is one binary with no
 interpreter, no packages and no environment to go wrong underneath it — which is
 why it is not a python script any more. The gcc that ships with RHEL8 (8.5) is
-enough, and the C++ runtime is linked in rather than loaded.
+enough.
+
+If `libstdc++.a` is there the C++ runtime is linked in rather than loaded, so
+there is nothing but libc underneath it. The build checks and falls back to the
+ordinary shared link if it is not, because needing a package installed to build
+would defeat the point; `dnf install libstdc++-static` if you want it.
 
 `restart` and `exec` additionally need the `ioc-restart` and `ioc-exec` scripts
 kept beside it, and a working kubectl setup.

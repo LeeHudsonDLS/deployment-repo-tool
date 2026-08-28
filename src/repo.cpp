@@ -22,7 +22,16 @@ std::string repo_from_cwd() {
         if (parent == root) return std::string();
         root = parent;
     }
-    return looks_like_a_deployment_repo(root) ? root : std::string();
+    if (!looks_like_a_deployment_repo(root)) return std::string();
+    // A checkout with nothing to edit is not the repo you meant. This tool's
+    // own source tree is called deployment-repo-tool and so passes the name
+    // test above; standing in it -- which the documented install makes likely,
+    // since you clone it and build it there -- used to claim the command and
+    // then refuse it. The current directory still beats anything inferred, but
+    // only when it is really a deployment repo, and having the file is what
+    // makes it one.
+    if (!is_file(path_join(root, VALUES))) return std::string();
+    return root;
 }
 
 // The names of the configured repos, for the "there is fe, va, ..." tail on an

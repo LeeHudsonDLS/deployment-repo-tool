@@ -303,6 +303,14 @@ for repo, fixture in ((FE_REPO, FE), (VA_REPO, VA)):
     os.makedirs(os.path.join(repo, ".git"))
     shutil.copy(fixture, os.path.join(repo, "apps", "values.yaml"))
 
+# A checkout whose name contains "deployment" but which has no values.yaml in
+# it. This tool's own source tree is exactly that, and the documented install
+# is to clone and build it, so standing in one is the normal case rather than a
+# strange one.
+TOOL_REPO = os.path.join(SANDBOX, "deployment-repo-tool")
+os.makedirs(os.path.join(TOOL_REPO, ".git"))
+os.makedirs(os.path.join(TOOL_REPO, "src"))
+
 RESOLVE_CFG = os.path.join(SANDBOX, "config.ini")
 resolve_cfg = configparser.ConfigParser(interpolation=None)
 resolve_cfg["repos"] = {"fe": FE_REPO, "va": VA_REPO}
@@ -343,6 +351,12 @@ resolves("cwd beats the service name", ["stop", "fe15*"], "current directory", c
 resolves("cwd from a subdirectory", ["stop", "sr22c-va-ioc-01"], "current directory",
          cwd=os.path.join(VA_REPO, "apps"))
 resolves("cwd names the repo it matched", ["stop", "sr22c-va-ioc-01"], "va  ", cwd=VA_REPO)
+# Nothing to edit means it is not the repo you meant: fall through to the
+# service name rather than claiming the command and then refusing it.
+resolves("a checkout with no values.yaml does not claim it",
+         ["stop", "fe15i-cs-ioc-01"], "matches fe*", cwd=TOOL_REPO)
+resolves("and neither does a subdirectory of one", ["stop", "sr22c-va-ioc-01"],
+         "matches sr*-va-ioc-*", cwd=os.path.join(TOOL_REPO, "src"))
 says("ambiguous shorthand asks", ["stop", "all"], "'all' is a shorthand in fe and va")
 says("unknown -r key lists the real ones", ["stop", "x", "-r", "nope"],
      "no repo 'nope' in the config")

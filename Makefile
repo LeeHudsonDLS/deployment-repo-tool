@@ -11,20 +11,44 @@
 # newer.
 #
 # The binary is deliberately left beside ioc-restart and ioc-exec: it finds them
-# next to itself, through a symlink if you put one on your PATH.
+# next to itself, through a symlink if you put one on your PATH. That means one
+# binary per checkout, so on a shared filesystem the last machine to build wins.
+# Object files are kept apart per toolchain (see below), but the binary cannot
+# be; run make on the machine you are going to use it from. Getting this wrong
+# fails loudly at exec, never quietly.
 
 CXX      ?= g++
 CXXFLAGS ?= -std=c++17 -O2 -Wall -Wextra -Wpedantic
-# The C++ runtime is linked in rather than loaded: an updated or missing
-# libstdc++ must not be able to stop the tool working.
-LDFLAGS  ?= -static-libstdc++ -static-libgcc
+
+# Linking the C++ runtime in rather than loading it is worth having: it is one
+# fewer thing that can change underneath the tool. But it needs libstdc++.a,
+# which RHEL8 keeps in a separate libstdc++-static package that is usually not
+# installed, and needing a package installed to build is exactly the sort of
+# dependency this tool is not supposed to have.
+#
+# So it is probed for rather than assumed. Without it the build falls back to
+# the ordinary shared link, which is no worse than any other program on the
+# machine. `dnf install libstdc++-static` (or the CXXFLAGS/LDFLAGS below) if
+# you want the static one.
+STATIC    := -static-libstdc++ -static-libgcc
+STATIC_OK := $(shell echo 'int main(){}' | $(CXX) -x c++ - $(STATIC) -o /dev/null 2>/dev/null && echo '$(STATIC)')
+LDFLAGS   ?= $(STATIC_OK)
 
 BIN      := deployment-repo-tool
 SRC      := $(wildcard src/*.cpp)
-OBJ      := $(patsubst src/%.cpp,build/%.o,$(SRC))
+
+# Object files go under the compiler that made them. A checkout on /dls_sw is
+# shared between machines, and building it on two of them put RHEL8 and Ubuntu
+# objects in one directory -- make saw nothing wrong with that, and the link
+# failed with a relocation error that says nothing about the real cause. Each
+# toolchain now gets its own directory and they cannot mix.
+TOOLCHAIN := $(shell $(CXX) -dumpmachine)-$(shell $(CXX) -dumpversion)
+BUILD     := build/$(TOOLCHAIN)
+
+OBJ      := $(patsubst src/%.cpp,$(BUILD)/%.o,$(SRC))
 # Everything but main, so the unit tests can link the same objects.
-LIB_OBJ  := $(filter-out build/main.o,$(OBJ))
-UNIT     := build/unit
+LIB_OBJ  := $(filter-out $(BUILD)/main.o,$(OBJ))
+UNIT     := $(BUILD)/unit
 
 .PHONY: all check test clean
 
@@ -33,14 +57,14 @@ all: $(BIN)
 $(BIN): $(OBJ)
 	$(CXX) $(CXXFLAGS) $(OBJ) -o $@ $(LDFLAGS)
 
-build/%.o: src/%.cpp | build
+$(BUILD)/%.o: src/%.cpp | $(BUILD)
 	$(CXX) $(CXXFLAGS) -MMD -MP -c $< -o $@
 
-$(UNIT): tests/unit.cpp $(LIB_OBJ) | build
+$(UNIT): tests/unit.cpp $(LIB_OBJ) | $(BUILD)
 	$(CXX) $(CXXFLAGS) -Isrc tests/unit.cpp $(LIB_OBJ) -o $@ $(LDFLAGS)
 
-build:
-	mkdir -p build
+$(BUILD):
+	mkdir -p $(BUILD)
 
 # The pieces python used to get from its standard library -- globbing, the ini
 # file, path handling, the diff -- are the ones worth testing directly.
