@@ -34,7 +34,7 @@ STATIC    := -static-libstdc++ -static-libgcc
 STATIC_OK := $(shell echo 'int main(){}' | $(CXX) -x c++ - $(STATIC) -o /dev/null 2>/dev/null && echo '$(STATIC)')
 LDFLAGS   ?= $(STATIC_OK)
 
-BIN      := deployment-repo-tool
+BIN      := ioc
 SRC      := $(wildcard src/*.cpp)
 
 # Object files go under the compiler that made them. A checkout on /dls_sw is
