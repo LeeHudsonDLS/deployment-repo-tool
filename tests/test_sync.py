@@ -2,6 +2,7 @@
 """Manual sync integration tests: real local Git, stubbed Argo CD only."""
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -16,6 +17,8 @@ class SyncTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.base = Path(self.tmp.name)
+        self.tool = self.base / "ioc"
+        shutil.copy(TOOL, self.tool)
         self.repo = self.base / "fe-deployment"
         self.remote = self.base / "remote.git"
         self.repo.mkdir()
@@ -75,7 +78,7 @@ sys.exit(1 if os.environ.get('SYNC_FAIL') == ' '.join(args[:3]) else 0)
         return subprocess.check_output(["git", *args], cwd=self.repo, stderr=subprocess.DEVNULL)
 
     def run_tool(self, *args):
-        return subprocess.run([str(TOOL), "--config", str(self.config), "-r", "fe", *args],
+        return subprocess.run([str(self.tool), "--config", str(self.config), "-r", "fe", *args],
                               cwd=self.repo, env=self.env, text=True, capture_output=True)
 
     def calls(self):

@@ -58,9 +58,8 @@ all = sr[0-2][0-9]c-va-ioc-[0-9][0-9]
 [general]
 # The scripts `restart` and `exec` run. Each is given one service name and does
 # the rest: finds kubectl, then deletes the pod and waits for the StatefulSet to
-# bring it back, or opens a shell inside it. `ioc-restart` and `ioc-exec` ship
-# in the checkout beside the tool and are used from there, so these are normally
-# left alone. Set one only to run a copy from somewhere else -- a modified one,
+# bring it back, or opens a shell inside it. `ioc-restart` and `ioc-exec` are
+# embedded in the binary at build time, so these are normally left alone. Set one only to run a copy from somewhere else -- a modified one,
 # or a shared install.
 # restart_script = /path/to/ioc-restart
 # exec_script = /path/to/ioc-exec

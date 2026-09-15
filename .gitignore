@@ -2,8 +2,7 @@
 # paths to your checkouts and would otherwise be picked up by anyone cloning.
 config.ini
 
-# Build output. The binary lives at the top of the checkout so that it sits
-# beside ioc-restart and ioc-exec, which is where it looks for them.
+# Build output, including generated embedded helper contents.
 /deployment-repo-tool
 /ioc
 /build/

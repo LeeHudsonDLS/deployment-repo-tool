@@ -10,8 +10,8 @@
 # more. It builds with the gcc that ships with RHEL8 (8.5, C++17) and anything
 # newer.
 #
-# The binary is deliberately left beside ioc-restart and ioc-exec: it finds them
-# next to itself, through a symlink if you put one on your PATH. That means one
+# The helper scripts are embedded at build time; only ioc needs installing.
+# There is one
 # binary per checkout, so on a shared filesystem the last machine to build wins.
 # Object files are kept apart per toolchain (see below), but the binary cannot
 # be; run make on the machine you are going to use it from. Getting this wrong
@@ -49,6 +49,9 @@ OBJ      := $(patsubst src/%.cpp,$(BUILD)/%.o,$(SRC))
 # Everything but main, so the unit tests can link the same objects.
 LIB_OBJ  := $(filter-out $(BUILD)/main.o,$(OBJ))
 UNIT     := $(BUILD)/unit
+EMBED    := $(BUILD)/embed
+HELPERS  := ioc-restart ioc-exec ioc-argocd
+GENERATED := $(BUILD)/embedded_helpers.h
 
 .PHONY: all check test clean
 
@@ -58,7 +61,15 @@ $(BIN): $(OBJ)
 	$(CXX) $(CXXFLAGS) $(OBJ) -o $@ $(LDFLAGS)
 
 $(BUILD)/%.o: src/%.cpp | $(BUILD)
-	$(CXX) $(CXXFLAGS) -MMD -MP -c $< -o $@
+	$(CXX) $(CXXFLAGS) -I$(BUILD) -MMD -MP -c $< -o $@
+
+$(EMBED): build-tools/embed.cpp | $(BUILD)
+	$(CXX) $(CXXFLAGS) $< -o $@ $(LDFLAGS)
+
+$(GENERATED): $(HELPERS) $(EMBED) Makefile
+	$(EMBED) $(HELPERS) > $@.tmp && mv $@.tmp $@
+
+$(BUILD)/helpers.o: $(GENERATED)
 
 $(UNIT): tests/unit.cpp $(LIB_OBJ) | $(BUILD)
 	$(CXX) $(CXXFLAGS) -Isrc tests/unit.cpp $(LIB_OBJ) -o $@ $(LDFLAGS)

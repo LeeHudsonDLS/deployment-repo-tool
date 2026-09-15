@@ -499,55 +499,48 @@ for action in sorted(ACTIONS):
           proc.returncode != 0 and "which is not there" in proc.stdout,
           proc.stdout.strip()[:200])
 
-# With nothing configured the scripts are the ones sitting beside the tool.
-# That must be exercised against a copy: the real siblings talk to a real
-# cluster, and a test run has no business deleting anyone's pod.
-BESIDE = os.path.join(CLUSTER, "beside")
-os.makedirs(BESIDE)
-COPIED_TOOL = os.path.join(BESIDE, "deployment-repo-tool")
-shutil.copy(TOOL, COPIED_TOOL)
-for action in ACTIONS:
-    shutil.copy(STUBS[action], os.path.join(BESIDE, ACTIONS[action]))
-
-bare_cluster = configparser.ConfigParser(interpolation=None)
-bare_cluster["repos"] = {"va": CLUSTER_REPO}
-BARE_CLUSTER_CFG = os.path.join(CLUSTER, "bare.ini")
-with open(BARE_CLUSTER_CFG, "w") as handle:
-    bare_cluster.write(handle)
-
-# Aliasing the tool is one way to install it; symlinking it onto PATH is the
-# other, and the sibling has to be found through the link rather than next to
-# it. abspath instead of realpath passes every other check and fails only here,
-# so the link has to live somewhere with no helper scripts of its own.
-LINKDIR = os.path.join(CLUSTER, "bin")
-os.makedirs(LINKDIR)
-LINKED = os.path.join(LINKDIR, "dep")
-os.symlink(COPIED_TOOL, LINKED)
-
-# A checkout the scripts are missing from.
+# A copied binary must run the embedded scripts without any siblings. Stub
+# kubectl, not the helper, so this exercises the actual embedded script bodies.
 ALONE = os.path.join(CLUSTER, "alone")
 os.makedirs(ALONE)
-ALONE_TOOL = os.path.join(ALONE, "deployment-repo-tool")
+ALONE_TOOL = os.path.join(ALONE, "ioc")
 shutil.copy(TOOL, ALONE_TOOL)
-
+LINKED = os.path.join(CLUSTER, "ioc-link")
+os.symlink(ALONE_TOOL, LINKED)
+BARE_CLUSTER_CFG = os.path.join(CLUSTER, "bare.ini")
+with open(BARE_CLUSTER_CFG, "w") as handle:
+    handle.write("[general]\n")
+KUBE_BIN = os.path.join(CLUSTER, "stub-bin")
+os.makedirs(KUBE_BIN)
+with open(os.path.join(KUBE_BIN, "kubectl"), "w") as handle:
+    handle.write('#!/bin/bash\nprintf "%s\\n" "$*" >> "$KUBE_RECORD"\n'
+                 'if [[ $1 == get ]]; then echo 1; else exit "${STUB_EXIT:-0}"; fi\n')
+os.chmod(os.path.join(KUBE_BIN, "kubectl"), 0o755)
+KUBE_RECORD = os.path.join(CLUSTER, "kubectl-calls")
+kube_env = dict(PATH=KUBE_BIN + os.pathsep + os.environ["PATH"],
+                KUBE_RECORD=KUBE_RECORD, EC_TARGET="accelerator")
 for action in sorted(ACTIONS):
-    proc = ran(action, "fe22i-mo-ioc-01", tool=COPIED_TOOL, config=BARE_CLUSTER_CFG)
-    check("%s: with nothing configured it uses the script beside the tool" % action,
-          proc.returncode == 0 and recorded() == [action, "fe22i-mo-ioc-01"],
-          proc.stdout.strip()[:200])
+    for binary in (ALONE_TOOL, LINKED):
+        open(KUBE_RECORD, "w").close()
+        proc = ran(action, "fe22i-mo-ioc-01", tool=binary,
+                   config=BARE_CLUSTER_CFG, env=kube_env)
+        calls = open(KUBE_RECORD).read()
+        check("%s: standalone binary/symlink runs embedded helper" % action,
+              proc.returncode == 0 and "get statefulset fe22i-mo-ioc-01" in calls,
+              proc.stdout + calls)
+        expected_call = ("delete pod -n accelerator -l app=fe22i-mo-ioc-01"
+                         if action == "restart" else "statefulset/fe22i-mo-ioc-01 -- bash")
+        check("%s: embedded helper reaches kubectl" % action, expected_call in calls, calls)
+    proc = ran(action, "fe22i-mo-ioc-01", tool=ALONE_TOOL,
+               config=BARE_CLUSTER_CFG, env=dict(kube_env, STUB_EXIT="7"))
+    check("%s: embedded helper preserves failure status" % action, proc.returncode == 7)
+    open(KUBE_RECORD, "w").close()
+    proc = ran(action, "fe22i-mo-ioc-01", "--dry-run", tool=ALONE_TOOL,
+               config=BARE_CLUSTER_CFG, env=kube_env)
+    check("%s: embedded preview does not run kubectl" % action,
+          proc.returncode == 0 and "(embedded)" in proc.stdout
+          and not open(KUBE_RECORD).read())
 
-    proc = ran(action, "fe22i-mo-ioc-01", tool=LINKED, config=BARE_CLUSTER_CFG)
-    check("%s: the sibling is found through a symlink to the tool" % action,
-          proc.returncode == 0 and recorded() == [action, "fe22i-mo-ioc-01"],
-          proc.stdout.strip()[:200])
-
-    proc = ran(action, "fe22i-mo-ioc-01", tool=ALONE_TOOL, config=BARE_CLUSTER_CFG)
-    check("%s: a missing sibling says both ways out" % action,
-          proc.returncode != 0 and "%s_script" % action in proc.stdout,
-          proc.stdout.strip()[:200])
-
-    check("%s: the shipped script is really there and executable" % action,
-          os.access(os.path.join(ROOT, ACTIONS[action]), os.X_OK))
 shutil.rmtree(CLUSTER, ignore_errors=True)
 
 # ------------------------------------------------------------------- the git

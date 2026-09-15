@@ -21,6 +21,7 @@
 #include "config.h"
 #include "diff.h"
 #include "glob.h"
+#include "helpers.h"
 #include "paths.h"
 #include "process.h"
 #include "repo.h"
@@ -56,13 +57,8 @@ std::string summarise(const std::vector<std::string> &names, const std::string &
     return joined;
 }
 
-// Where the shell script for a cluster action is.
-//
-// It ships beside the tool, so normally there is nothing to configure. The
-// lookup goes through the real path of this binary rather than the name it was
-// invoked by: installing by symlinking onto PATH is documented, and next to the
-// symlink there is nothing to find. The config key is for running a copy from
-// somewhere else.
+// An explicit override keeps its existing executable/shebang semantics.
+// Otherwise use the script embedded when this binary was built.
 std::string helper_script(const Config &config, const Action &action) {
     const std::string key = std::string(action.name) + "_script";
 
@@ -76,15 +72,7 @@ std::string helper_script(const Config &config, const Action &action) {
         return script;
     }
 
-    const std::string self = own_path();
-    const std::string script =
-        self.empty() ? std::string() : path_join(dirname(self), action.script);
-    if (script.empty() || !is_file(script)) {
-        fail(format("%s is missing from the checkout - restore it, or point"
-                    " [general] %s at a copy",
-                    action.script, key.c_str()));
-    }
-    return script;
+    return std::string();
 }
 
 // Carry out a cluster action by handing the service name to its script.
@@ -105,16 +93,17 @@ void on_cluster(const Config &config, const Action &action, const std::string &s
 
     const std::string script = helper_script(config, action);
     if (dry_run) {
-        std::cout << "would run: " << script << " " << service << std::endl;
+        std::cout << "would run: " << (script.empty() ? action.script : script)
+                  << (script.empty() ? " (embedded) " : " ") << service << std::endl;
         return;
     }
 
     // The script replaces this process, so its exit status is ours and a
     // failure cannot look like a success. The terminal is left alone: rollout
     // progress has to be readable, and for exec the remote shell needs the tty.
-    std::vector<std::string> argv;
-    argv.push_back(script);
-    argv.push_back(service);
+    const std::vector<std::string> argv = script.empty()
+        ? embedded_helper(action.script, {service})
+        : std::vector<std::string>{script, service};
     run_replacing_self(argv);
 }
 

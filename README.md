@@ -31,32 +31,39 @@ anywhere, it works out which repo you meant.
 
 ## Requirements
 
-C++17 and make to build it; nothing at all to run it. It is one binary with no
-interpreter, no packages and no environment to go wrong underneath it — which is
-why it is not a python script any more. The gcc that ships with RHEL8 (8.5) is
-enough.
+C++17 and make build a single `ioc` executable, including its helper scripts.
+No Python or additional build packages are required. The gcc shipped with
+RHEL8 (8.5, C++17) is sufficient. At runtime, Git is required for repository
+operations; Bash and kubectl for `restart`/`exec`; Bash and Argo CD for
+`--force-sync` (including the existing Diamond module setup when needed).
 
 If `libstdc++.a` is there the C++ runtime is linked in rather than loaded, so
 there is nothing but libc underneath it. The build checks and falls back to the
 ordinary shared link if it is not, because needing a package installed to build
 would defeat the point; `dnf install libstdc++-static` if you want it.
 
-`restart` and `exec` additionally need the `ioc-restart` and `ioc-exec` scripts
-kept beside it, and a working kubectl setup.
-
 ## Installing
 
-Clone it, build it, and put the binary on your PATH or alias it:
+Build and copy just the binary onto your PATH:
 
 ```bash
 make
-alias dep=/path/to/deployment-repo-tool/deployment-repo-tool
+mkdir -p ~/bin
+install -m 755 ioc ~/bin/ioc
 ```
 
-The binary is built at the top of the checkout, beside `ioc-restart` and
-`ioc-exec`, which is where it looks for them — through a symlink if you put one
-on your PATH. `make clean` removes it and the `build/` directory; neither is
-committed.
+Ensure `~/bin` is on PATH. The helper scripts are embedded in `ioc` and run
+through Bash without extracting temporary files. No sibling scripts or checkout
+are needed at runtime. A symlink or alias to the built `ioc` also works.
+
+The binary still needs a compatible Linux architecture and C runtime; embedding
+scripts does not make a build for one platform run on every other platform.
+Build on the oldest target system you need to support. `make clean` removes
+`ioc` and the `build/` directory; neither is committed.
+
+Editing `ioc-restart`, `ioc-exec` or `ioc-argocd` causes `make` to regenerate the
+embedded contents and relink `ioc`. Rebuild and copy the binary again to deploy
+helper changes. The source scripts remain independently runnable for development.
 
 Then copy `config.ini.example` to `~/.config/deployment-repo-tool/config.ini` and
 set the paths to your own checkouts. Nothing in the checkout is read as config —
@@ -92,12 +99,12 @@ ioc stop fe22i-mo-ioc-01 --force-sync --argocd-app accelerator/fe
 ioc start 'fe15*' --force-sync --argocd-app accelerator/fe --dry-run
 ```
 
-`--force-sync` uses the `ioc-argocd` helper shipped beside the binary. If
+`--force-sync` uses the embedded `ioc-argocd` helper. If
 `argocd` is missing from PATH, the helper initialises Environment Modules and
 loads `argocd/v2.14.10`, the CLI dependency supplied by Diamond's `ec/va`
 module. It does not load `ec/va` or change the Kubernetes context. An existing
 `argocd` on PATH is used directly. All module changes stay in the helper's
-child shell. Keep `ioc-argocd` beside the binary when installing it.
+child shell.
 
 Before any Git operations, the helper checks the CLI, checks login status with
 `argocd account get-user-info`, and reads the parent app
@@ -180,11 +187,9 @@ worth of IOCs by accident. Both check the name against the cluster first, so a
 typo is an error rather than a silent no-op, and both say so rather than
 hanging if the IOC is stopped.
 
-`ioc-restart` and `ioc-exec` ship in this repo beside the built binary
-and are used from there, so there is nothing to configure and nothing extra to
-install. Symlinking the tool onto your PATH is fine — the siblings are found
-through the link. Set `restart_script` or `exec_script` in `[general]` only to
-run a copy from somewhere else.
+`ioc-restart` and `ioc-exec` are embedded at build time. Set `restart_script`
+or `exec_script` in `[general]` to run a custom external executable instead;
+these overrides retain their own shebang and exit status.
 
 They are normal shell scripts and work on their own:
 
@@ -276,7 +281,7 @@ cs = fe[0-9][0-9][ijkb]-cs-ioc-0[1-9]
 
 Read from the first of: `--config`, `$DEPLOYMENT_REPO_CONFIG`,
 `$XDG_CONFIG_HOME/deployment-repo-tool/config.ini` (`~/.config` if unset), then
-`config.ini` beside the script (gitignored; the repo ships only
+`config.ini` beside the binary (gitignored; the repo ships only
 `config.ini.example`). With no config at all it still works on whatever repo you
 are standing in.
 

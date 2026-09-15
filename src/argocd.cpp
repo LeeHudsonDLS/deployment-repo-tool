@@ -3,16 +3,12 @@
 #include <iostream>
 
 #include "process.h"
-#include "paths.h"
+#include "helpers.h"
 #include "support.h"
 
 namespace {
 int run_argocd(const std::vector<std::string> &args) {
-    const std::string helper = path_join(dirname(own_path()), "ioc-argocd");
-    if (!is_file(helper)) fail("ioc-argocd is missing; restore it beside the ioc binary");
-    std::vector<std::string> command = {"bash", helper};
-    command.insert(command.end(), args.begin(), args.end());
-    return run(command);
+    return run(embedded_helper("ioc-argocd", args));
 }
 bool valid_name(const std::string &name) {
     return !name.empty() && name[0] != '-' && name[0] != '.' &&

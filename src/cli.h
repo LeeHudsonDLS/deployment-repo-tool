@@ -19,7 +19,7 @@
 // What the tool can be asked to do. `script` is null for the actions that edit
 // the repo, and names the shell script to hand the service to for the two that
 // act on the cluster instead. Adding a cluster action is a line here and a
-// script beside the tool.
+// script in the build-time embedded helpers.
 struct Action {
     const char *name;
     const char *script;
