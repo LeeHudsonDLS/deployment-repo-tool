@@ -5,4 +5,5 @@ config.ini
 # Build output. The binary lives at the top of the checkout so that it sits
 # beside ioc-restart and ioc-exec, which is where it looks for them.
 /deployment-repo-tool
+/ioc
 /build/

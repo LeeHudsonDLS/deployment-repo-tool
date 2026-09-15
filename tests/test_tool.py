@@ -38,7 +38,7 @@ import yaml
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-TOOL = os.path.join(ROOT, "deployment-repo-tool")
+TOOL = os.path.join(ROOT, "ioc")
 VA = os.path.join(HERE, "va-values.yaml")
 FE = os.path.join(HERE, "fe-values.yaml")
 
