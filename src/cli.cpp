@@ -34,6 +34,7 @@ struct LongOption {
 };
 
 const LongOption LONG_OPTIONS[] = {
+    {"force-sync", false}, {"argocd-app", true},
     {"help", false},   {"repo", true},   {"config", true},
     {"list", false},   {"no-git", false}, {"dry-run", false},
 };
@@ -49,7 +50,7 @@ std::string usage_line() {
     // Continuation lines line up under the first argument, as argparse's did.
     const std::string indent(std::string("usage: ").size() + program_name.size() + 1, ' ');
     return "usage: " + program_name + " [-h] [-r REPO] [--config PATH] [--list]\n" +
-           indent + "[--no-git] [--dry-run]\n" + indent + "[{" + action_choices(",") +
+           indent + "[--no-git] [--dry-run] [--force-sync] [--argocd-app APP]\n" + indent + "[{" + action_choices(",") +
            "}] [SERVICE] [revision]";
 }
 
@@ -95,7 +96,10 @@ const char *OPTION_HELP =
     "  --config PATH         config file to use\n"
     "  --list                show the configured repos and exit\n"
     "  --no-git              edit the file only: no pull, commit or push\n"
-    "  --dry-run             show the change, write nothing";
+    "  --dry-run             show the change, write nothing\n"
+    "  --force-sync          after pushing, manually sync parent and service apps\n"
+    "  --argocd-app APP      override parent app (default: accelerator/<repo name>\n"
+    "                        without -deployment, or [<repo>.argocd] app)";
 
 // The [<repo>.aliases] sections, for the bottom of --help. Built from the
 // config that is actually loaded, so the help cannot drift from it.
@@ -150,6 +154,8 @@ const LongOption *match_long_option(const std::string &name) {
 
 void store(Args *args, const std::string &name, const std::string &value) {
     if (name == "repo") args->repo = value;
+    else if (name == "force-sync") args->force_sync = true;
+    else if (name == "argocd-app") args->argocd_app = value;
     else if (name == "config") args->config = value;
     else if (name == "list") args->list = true;
     else if (name == "no-git") args->no_git = true;

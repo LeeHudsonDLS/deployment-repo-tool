@@ -1,0 +1,78 @@
+#!/bin/bash
+# Argo CD environment and login for ioc --force-sync only.
+set -euo pipefail
+
+server=${IOC_ARGOCD_SERVER:-hylas-argocd.diamond.ac.uk}
+cli_module=${IOC_ARGOCD_MODULE:-argocd/v2.14.10}
+
+if ! command -v argocd >/dev/null 2>&1; then
+    # `module` is normally a shell function, not an executable. Initialise it
+    # in this child shell without sourcing a user's interactive shell startup.
+    if ! type module >/dev/null 2>&1; then
+        for setup in /etc/profile.d/modules.sh /usr/share/Modules/init/bash /usr/share/lmod/lmod/init/bash; do
+            if [[ -r $setup ]]; then
+                set +eu
+                source "$setup"
+                set -eu
+                type module >/dev/null 2>&1 && break
+            fi
+        done
+    fi
+    if ! type module >/dev/null 2>&1; then
+        echo "argocd is missing and Environment Modules is unavailable; run module load $cli_module before ioc." >&2
+        exit 1
+    fi
+    echo "Loading $cli_module for Argo CD ..." >&2
+    # Module initialisation is not necessarily compatible with nounset.
+    set +eu
+    module load "$cli_module"
+    module_status=$?
+    set -eu
+    if [[ $module_status != 0 ]] || ! command -v argocd >/dev/null 2>&1; then
+        echo "Cannot load argocd; run module load $cli_module before ioc." >&2
+        exit 1
+    fi
+fi
+
+if [[ ${1:-} != preflight ]]; then
+    exec argocd "$@" --server "$server" --grpc-web
+fi
+
+parent=$2
+if ! argocd version --client; then
+    echo "--force-sync requires a working argocd CLI on PATH" >&2
+    exit 1
+fi
+
+# Authentication is separate from project access: anonymous requests can get
+# PermissionDenied for the parent even though the real user has access.
+check_session() {
+    if result=$(argocd account get-user-info --server "$server" --grpc-web 2>&1); then
+        case "$result" in
+            *"Logged In: true"*) return 0 ;;
+            *"Logged In: false"*) return 10 ;;
+            *) printf 'Unexpected Argo CD session response: %s\n' "$result" >&2; return 1 ;;
+        esac
+    fi
+    case "$result" in
+        *Unauthenticated*|*oauth2:*|*"not logged in"*|*"no session information"*|*"authentication required"*|*"Auth token is not set"*) return 10 ;;
+        *) printf '%s\n' "$result" >&2; return 1 ;;
+    esac
+}
+
+if check_session; then
+    # Authenticated PermissionDenied is a real access failure, not a login cue.
+    argocd app get "$parent" --output json --server "$server" --grpc-web >/dev/null
+    exit 0
+else
+    session_status=$?
+    [[ $session_status == 10 ]] || exit 1
+fi
+
+echo "Argo CD login is missing or expired; starting SSO for $server ..." >&2
+login_args=(login "$server" --grpc-web --sso)
+# Keep Argo CD's default browser launch, including over SSH with X11 forwarding.
+argocd "${login_args[@]}"
+# Retry once. Login failure, continued expiry, or denied access stops before Git.
+check_session
+argocd app get "$parent" --output json --server "$server" --grpc-web >/dev/null

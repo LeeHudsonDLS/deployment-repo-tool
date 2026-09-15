@@ -40,6 +40,8 @@ struct Args {
     bool list = false;
     bool no_git = false;
     bool dry_run = false;
+    bool force_sync = false;
+    std::string argocd_app;
 };
 
 // The config is only needed so that --help can list the shorthand each repo

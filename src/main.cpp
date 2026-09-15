@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "cli.h"
+#include "argocd.h"
 #include "config.h"
 #include "diff.h"
 #include "glob.h"
@@ -127,6 +128,14 @@ int main(int argc, char **argv) {
     if (!args.config.empty()) loaded = read_config(args.config);
     const Config &config = loaded.config;
 
+    if (args.force_sync && (args.no_git || args.list ||
+                           args.action == "restart" || args.action == "exec")) {
+        usage_error("--force-sync requires start, stop or deploy with git enabled");
+    }
+    if (!args.argocd_app.empty() && !args.force_sync) {
+        usage_error("--argocd-app requires --force-sync");
+    }
+
     if (args.list) {
         show_repos(config, loaded.path);
         return 0;
@@ -157,11 +166,29 @@ int main(int argc, char **argv) {
     std::cout << "repo    " << (repo.key.empty() ? "" : repo.key + "  ") << repo.root
               << "  (" << repo.why << ")\n";
     const std::string path = path_join(repo.root, VALUES);
+    std::string parent = !args.argocd_app.empty() ? args.argocd_app :
+        config.get(repo.key + ".argocd", "app");
+    // Infer only from the checkout selected and validated above, never from
+    // a service pattern or a config key which may name a different directory.
+    if (args.force_sync && parent.empty()) {
+        const std::string directory = basename(repo.root);
+        const std::string suffix = "-deployment";
+        if (ends_with(directory, suffix) && directory.size() > suffix.size()) {
+            parent = "accelerator/" + directory.substr(0, directory.size() - suffix.size());
+        }
+    }
+    if (args.force_sync) check_sync_names(parent, {});
+    if (args.force_sync && !args.dry_run) prepare_argocd(parent);
 
     // Pull before reading, so the edit is made against what is really deployed.
     // --ff-only: if the branch has diverged, stop and let a human sort it out
     // rather than quietly building a merge on top of someone else's work.
     if (!(args.no_git || args.dry_run)) git(repo.root, {"pull", "--ff-only"});
+
+    if (args.force_sync && !args.dry_run &&
+        run({"git", "-C", repo.root, "diff", "--quiet", "HEAD", "--", VALUES}) != 0) {
+        fail("--force-sync requires apps/values.yaml to have no uncommitted changes");
+    }
 
     Lines lines = split_lines(read_file(path));
     // If the file does not end in a newline, appending an entry would join it
@@ -172,6 +199,7 @@ int main(int argc, char **argv) {
     Options aliases;
     if (!repo.key.empty()) aliases = config.section(repo.key + ".aliases");
     const std::vector<std::string> targets = select(lines, args.service, aliases);
+    if (args.force_sync) check_sync_names(parent, targets);
     if (targets.size() > 1) {
         std::cout << args.action << ": " << join(targets, ", ") << "\n";
     }
@@ -203,11 +231,17 @@ int main(int argc, char **argv) {
     if (lines == before) {
         std::cout << "nothing to do - " << summarise(targets, args.service)
                   << " already as asked for" << std::endl;
+        if (args.force_sync) {
+            // Retry a failed push too, without making an empty commit.
+            if (!args.dry_run) git(repo.root, {"push"});
+            sync_apps(parent, targets, args.dry_run);
+        }
         return 0;
     }
     std::cout << unified_diff(before, lines, VALUES, VALUES);
 
     if (args.dry_run) {
+        if (args.force_sync) sync_apps(parent, targets, true);
         std::cout.flush();
         return 0;
     }
@@ -225,5 +259,6 @@ int main(int argc, char **argv) {
     git(repo.root, {"add", "--", VALUES});
     git(repo.root, {"commit", "-m", message, "--", VALUES});
     git(repo.root, {"push"});
+    if (args.force_sync) sync_apps(parent, targets, false);
     return 0;
 }

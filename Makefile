@@ -76,6 +76,7 @@ check: $(UNIT)
 # in the test file; without uv, pip install pyyaml && python3 tests/test_tool.py.
 test: $(BIN) check
 	uv run tests/test_tool.py
+	uv run tests/test_sync.py
 
 clean:
 	rm -rf build $(BIN)

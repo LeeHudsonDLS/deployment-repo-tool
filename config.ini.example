@@ -70,3 +70,8 @@ all = sr[0-2][0-9]c-va-ioc-[0-9][0-9]
 # error naming the configured repos is more use than quietly picking one.
 # Uncomment if you would rather have a default.
 # default = fe
+
+# Optional manual sync, using the existing argocd CLI login/context.
+# The namespace here is where the Application objects live.
+# [fe.argocd]
+# app = accelerator/fe

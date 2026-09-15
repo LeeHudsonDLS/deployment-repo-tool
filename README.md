@@ -83,6 +83,83 @@ dep stop sr22c-va-ioc-01
 dep deploy sr22c-va-ioc-01 2026_sd3
 ```
 
+### Applying changes during a run
+
+With the `argocd` CLI installed and logged into the appropriate server, use:
+
+```bash
+ioc stop fe22i-mo-ioc-01 --force-sync --argocd-app accelerator/fe
+ioc start 'fe15*' --force-sync --argocd-app accelerator/fe --dry-run
+```
+
+`--force-sync` uses the `ioc-argocd` helper shipped beside the binary. If
+`argocd` is missing from PATH, the helper initialises Environment Modules and
+loads `argocd/v2.14.10`, the CLI dependency supplied by Diamond's `ec/va`
+module. It does not load `ec/va` or change the Kubernetes context. An existing
+`argocd` on PATH is used directly. All module changes stay in the helper's
+child shell. Keep `ioc-argocd` beside the binary when installing it.
+
+Before any Git operations, the helper checks the CLI, checks login status with
+`argocd account get-user-info`, and reads the parent app
+from `hylas-argocd.diamond.ac.uk` using `--grpc-web`. A missing or expired
+login starts `argocd login hylas-argocd.diamond.ac.uk --grpc-web --sso`, then
+retries the access check once. Other failures, such as denied access or network
+errors, stop without attempting SSO. Failed login also stops before Git.
+
+SSO uses Argo CD's default browser launch on the host running the tool,
+including over SSH with X11 forwarding. It inherits your display environment,
+just like running `argocd login ... --grpc-web --sso` directly.
+
+Set `IOC_ARGOCD_SERVER` to use a different Argo CD server, or
+`IOC_ARGOCD_MODULE` to choose a different module version. The server setting
+applies to both login and all sync commands. The helper never executes `EC_LOGIN`
+or infers a target from `EC_TARGET`, which may refer to a different area.
+Without `--force-sync`, none of this setup runs. `--dry-run` also skips module
+loading, authentication checks and login.
+
+Normally `--argocd-app` can be omitted:
+
+```bash
+ioc stop fe03i-mo-ioc-01 --force-sync
+```
+
+After resolving and validating the deployment checkout through the normal repo
+selection rules, the tool infers `accelerator/fe` from a directory named
+`fe-deployment`. It uses the resolved directory name, not the config key or
+service pattern. The namespace defaults to `accelerator`.
+
+An explicit `--argocd-app` takes precedence over `[<repo>.argocd] app, which
+in turn overrides inference. For a differently named checkout, configure the
+parent or pass it explicitly:
+
+```ini
+[fe.argocd]
+app = accelerator/fe
+```
+
+After a successful push, the tool refreshes the parent from Git, synchronously
+syncs its selected child Application resources, then refreshes and syncs each
+selected service app with pruning enabled. Syncs have a 300-second timeout.
+The parent sync is selective so other services' pending Application changes
+are not applied. Child syncs apply all pending changes in those selected apps,
+including resource deletions. Child app names must match service names and
+share the parent's Application namespace; `accelerator/fe` specifies that
+namespace explicitly. A bare `fe` uses Argo CD's default app namespace.
+The parent must track the repository and branch you push to.
+
+This uses the CLI's saved login for the selected server. The flag requests a normal manual sync; it does not use Argo CD's `--force`
+apply option or alter project policy. The project's
+[sync windows must permit manual syncs](https://argo-cd.readthedocs.io/en/stable/user-guide/sync_windows/),
+and your account needs permission to get and sync both parent and child apps.
+
+`--dry-run` previews the commands without contacting Git or Argo CD or writing
+files. `--force-sync` is accepted for `start`, `stop` and `deploy`, and cannot
+be combined with `--no-git`. Uncommitted changes in `apps/values.yaml` are
+rejected. If a sync fails, the command fails and the pushed Git changes remain;
+fix the reported problem and repeat the command. It pushes and syncs even when
+the file already has the requested setting, without making an empty commit.
+A timeout may leave the server-side operation running; inspect it before retrying.
+
 ### Restarting, and getting a shell
 
 `restart` and `exec` are the odd ones out: they change nothing in the repo and
@@ -123,7 +200,8 @@ already done it (`KLOGIN` overrides where that lives). The namespace comes from
 `$IOC_EXEC_SHELL` picks another, and it asks kubectl for a TTY only when it has
 one to give, so piping into it behaves.
 
-Options: `-r/--repo`, `--config PATH`, `--list`, `--no-git`, `--dry-run`.
+Options: `-r/--repo`, `--config PATH`, `--list`, `--no-git`, `--dry-run`,
+`--force-sync`, `--argocd-app APP`.
 `--dry-run` touches nothing at all — no pull, no write, no commit.
 
 ### Several at once
@@ -248,3 +326,7 @@ uv: `pip install pyyaml && python3 tests/test_tool.py`.
 Everything runs against temporary copies of the fixtures in `tests/`, the git
 flow against a local bare remote, and the cluster actions against stub scripts.
 Your real deployment repos and the real cluster are never touched.
+
+`tests/test_sync.py` checks manual sync ordering and selection, previews,
+invalid options, dirty files, failed pushes, failed syncs and retries against
+temporary Git repositories and a stub `argocd` executable.
