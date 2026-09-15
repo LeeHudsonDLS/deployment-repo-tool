@@ -1,50 +1,14 @@
 # deployment-repo-tool
 
-Start, stop and deploy services in a Diamond ArgoCD `*-deployment` repo, without
-hand-editing `apps/values.yaml` and without getting the git dance wrong. It also
-restarts a running IOC and opens a shell in one, which are the things it does
-that leave the repo alone.
+`ioc` starts, stops and deploys IOCs and other services by updating a Diamond
+Argo CD deployment repository. It pulls, edits `apps/values.yaml`, shows the
+diff, commits and pushes. Add `--force-sync` to apply the change during a run.
 
-```console
-$ deployment-repo-tool stop sr22c-va-ioc-01
-repo    va  /path/to/va-deployment  ('sr22c-va-ioc-01' matches sr*-va-ioc-*)
-Already up to date.
---- apps/values.yaml
-+++ apps/values.yaml
-@@ -69,7 +69,7 @@
-     labels:
-       description:
-   sr22c-va-ioc-01:
--    enabled: true
-+    enabled: false
-     targetRevision: 2026_sd3
-     labels:
-       description:
-[main 2cf974f] Stopping sr22c-va-ioc-01
- 1 file changed, 1 insertion(+), 1 deletion(-)
-To https://gitlab.diamond.ac.uk/.../va-deployment.git
-   572870b..2cf974f  main -> main
-```
+It can also restart a running IOC or open a shell in its pod.
 
-It pulls first, edits the file, shows the diff, commits and pushes — run from
-anywhere, it works out which repo you meant.
+## Install
 
-## Requirements
-
-C++17 and make build a single `ioc` executable, including its helper scripts.
-No Python or additional build packages are required. The gcc shipped with
-RHEL8 (8.5, C++17) is sufficient. At runtime, Git is required for repository
-operations; Bash and kubectl for `restart`/`exec`; Bash and Argo CD for
-`--force-sync` (including the existing Diamond module setup when needed).
-
-If `libstdc++.a` is there the C++ runtime is linked in rather than loaded, so
-there is nothing but libc underneath it. The build checks and falls back to the
-ordinary shared link if it is not, because needing a package installed to build
-would defeat the point; `dnf install libstdc++-static` if you want it.
-
-## Installing
-
-Build and copy just the binary onto your PATH:
+Build with a C++17 compiler and make (GCC 8.5 on RHEL8 is sufficient):
 
 ```bash
 make
@@ -52,286 +16,262 @@ mkdir -p ~/bin
 install -m 755 ioc ~/bin/ioc
 ```
 
-Ensure `~/bin` is on PATH. The helper scripts are embedded in `ioc` and run
-through Bash without extracting temporary files. No sibling scripts or checkout
-are needed at runtime. A symlink or alias to the built `ioc` also works.
+Ensure `~/bin` is on your PATH. **Copy only `ioc`**: all three helper scripts
+are embedded in the binary. A symlink or alias to the built binary also works.
 
-The binary still needs a compatible Linux architecture and C runtime; embedding
-scripts does not make a build for one platform run on every other platform.
-Build on the oldest target system you need to support. `make clean` removes
-`ioc` and the `build/` directory; neither is committed.
+Runtime requirements depend on the action:
 
-Editing `ioc-restart`, `ioc-exec` or `ioc-argocd` causes `make` to regenerate the
-embedded contents and relink `ioc`. Rebuild and copy the binary again to deploy
-helper changes. The source scripts remain independently runnable for development.
-
-Then copy `config.ini.example` to `~/.config/deployment-repo-tool/config.ini` and
-set the paths to your own checkouts. Nothing in the checkout is read as config —
-the example file is named so the tool ignores it, so a fresh clone cannot touch
-anyone else's repos — and your settings under `~/.config` survive a `git pull`.
-
-## Usage
-
-```
-deployment-repo-tool ACTION SERVICE [REVISION] [options]
-```
-
-| Action | What it writes |
+| Action | External tools |
 |---|---|
-| `start` | `enabled: true` |
-| `stop` | `enabled: false` |
-| `deploy REVISION` | `enabled: true` and `targetRevision: REVISION`, adding the entry if the service is not listed yet |
-| `restart` | nothing — see below |
-| `exec` | nothing — see below |
+| `start`, `stop`, `deploy` | Git |
+| `--force-sync` | Bash and Argo CD |
+| `restart`, `exec` | Bash and kubectl |
+
+The binary needs a compatible Linux architecture and C runtime. Build on the
+oldest system you need to support. The build links the C++ runtime statically
+when available, and otherwise uses the shared runtime.
+
+Copy `config.ini.example` to `~/.config/deployment-repo-tool/config.ini` and
+edit the checkout paths. The example file itself is never loaded. See
+[Configuration](#configuration) for a minimal example.
+
+## Common commands
 
 ```bash
-dep start sr22c-va-ioc-01
-dep stop sr22c-va-ioc-01
-dep deploy sr22c-va-ioc-01 2026_sd3
+ioc start fe03i-mo-ioc-01
+ioc stop fe03i-mo-ioc-01
+ioc deploy fe03i-mo-ioc-01 2026_sd3
+ioc stop fe03i-mo-ioc-01 --force-sync
+ioc restart fe03i-mo-ioc-01
+ioc exec fe03i-mo-ioc-01
 ```
 
-### Applying changes during a run
+```text
+ioc ACTION SERVICE [REVISION] [options]
+```
 
-With the `argocd` CLI installed and logged into the appropriate server, use:
+| Action | Effect |
+|---|---|
+| `start` | Set `enabled: true` |
+| `stop` | Set `enabled: false` |
+| `deploy` | Enable the service and set `targetRevision`; takes a revision and can add a new service |
+| `restart` | Delete the running pod and wait for its StatefulSet to recreate it |
+| `exec` | Open a shell in the running pod |
+
+`start` and `stop` require an existing service. If the requested settings are
+already in Git, no new commit is made. With `--force-sync`, the tool still
+pushes and syncs, so the same command can retry a previous failure.
+
+### Options
+
+| Option | Purpose |
+|---|---|
+| `-r REPO`, `--repo REPO` | Select a configured repo key or a checkout path |
+| `--config PATH` | Use a specific configuration file |
+| `--list` | Show configured repos and whether their paths exist |
+| `--dry-run` | Preview without writing files, running Git, loading modules or contacting the cluster |
+| `--no-git` | Edit the values file without pulling, committing or pushing |
+| `--force-sync` | Manually sync after pushing; for `start`, `stop` and `deploy` only |
+| `--argocd-app APP` | Override the inferred parent app; requires `--force-sync` |
+| `-h`, `--help` | Show usage and configured aliases |
+
+`--force-sync` cannot be combined with `--no-git`.
+
+### Multiple services and aliases
+
+For `start`, `stop` and `deploy`, quote a glob to select several existing
+services in one commit and push:
 
 ```bash
-ioc stop fe22i-mo-ioc-01 --force-sync --argocd-app accelerator/fe
-ioc start 'fe15*' --force-sync --argocd-app accelerator/fe --dry-run
+ioc stop 'fe15*'
+ioc start 'fe[0-9]*'
+ioc stop 'fe1[59]*' --force-sync --dry-run
 ```
 
-`--force-sync` uses the embedded `ioc-argocd` helper. If
-`argocd` is missing from PATH, the helper initialises Environment Modules and
-loads `argocd/v2.14.10`, the CLI dependency supplied by Diamond's `ec/va`
-module. It does not load `ec/va` or change the Kubernetes context. An existing
-`argocd` on PATH is used directly. All module changes stay in the helper's
-child shell.
+Quoting prevents your shell from expanding the pattern against local files.
+Globs cannot add new services.
 
-Before any Git operations, the helper checks the CLI, checks login status with
-`argocd account get-user-info`, and reads the parent app
-from `hylas-argocd.diamond.ac.uk` using `--grpc-web`. A missing or expired
-login starts `argocd login hylas-argocd.diamond.ac.uk --grpc-web --sso`, then
-retries the access check once. Other failures, such as denied access or network
-errors, stop without attempting SSO. Failed login also stops before Git.
+Aliases define reusable patterns in the configuration:
 
-SSO uses Argo CD's default browser launch on the host running the tool,
-including over SSH with X11 forwarding. It inherits your display environment,
-just like running `argocd login ... --grpc-web --sso` directly.
+```bash
+ioc stop cs -r fe
+ioc start all -r fe
+```
 
-Set `IOC_ARGOCD_SERVER` to use a different Argo CD server, or
-`IOC_ARGOCD_MODULE` to choose a different module version. The server setting
-applies to both login and all sync commands. The helper never executes `EC_LOGIN`
-or infers a target from `EC_TARGET`, which may refer to a different area.
-Without `--force-sync`, none of this setup runs. `--dry-run` also skips module
-loading, authentication checks and login.
+## Applying changes during a run
 
-Normally `--argocd-app` can be omitted:
+Argo CD normally applies repository changes according to its sync windows.
+To request a manual sync after pushing:
 
 ```bash
 ioc stop fe03i-mo-ioc-01 --force-sync
 ```
 
-After resolving and validating the deployment checkout through the normal repo
-selection rules, the tool infers `accelerator/fe` from a directory named
-`fe-deployment`. It uses the resolved directory name, not the config key or
-service pattern. The namespace defaults to `accelerator`.
+The tool resolves the deployment checkout first, then infers `accelerator/fe`
+from the directory name `fe-deployment`. The namespace defaults to
+`accelerator`. Parent selection uses this order:
 
-An explicit `--argocd-app` takes precedence over `[<repo>.argocd] app, which
-in turn overrides inference. For a differently named checkout, configure the
-parent or pass it explicitly:
+1. `--argocd-app APP`
+2. `[<repo>.argocd] app` in the configuration
+3. `accelerator/<directory name without -deployment>`
 
-```ini
-[fe.argocd]
-app = accelerator/fe
-```
+Use an override for a differently named checkout. A bare app name, such as
+`fe`, uses Argo CD's default Application namespace.
 
-After a successful push, the tool refreshes the parent from Git, synchronously
-syncs its selected child Application resources, then refreshes and syncs each
-selected service app with pruning enabled. Syncs have a 300-second timeout.
-The parent sync is selective so other services' pending Application changes
-are not applied. Child syncs apply all pending changes in those selected apps,
-including resource deletions. Child app names must match service names and
-share the parent's Application namespace; `accelerator/fe` specifies that
-namespace explicitly. A bare `fe` uses Argo CD's default app namespace.
-The parent must track the repository and branch you push to.
+### Setup and login
 
-This uses the CLI's saved login for the selected server. The flag requests a normal manual sync; it does not use Argo CD's `--force`
-apply option or alter project policy. The project's
-[sync windows must permit manual syncs](https://argo-cd.readthedocs.io/en/stable/user-guide/sync_windows/),
-and your account needs permission to get and sync both parent and child apps.
+Only with `--force-sync`, the tool:
 
-`--dry-run` previews the commands without contacting Git or Argo CD or writing
-files. `--force-sync` is accepted for `start`, `stop` and `deploy`, and cannot
-be combined with `--no-git`. Uncommitted changes in `apps/values.yaml` are
-rejected. If a sync fails, the command fails and the pushed Git changes remain;
-fix the reported problem and repeat the command. It pushes and syncs even when
-the file already has the requested setting, without making an empty commit.
-A timeout may leave the server-side operation running; inspect it before retrying.
+1. Uses `argocd` on PATH, or loads Diamond's `argocd/v2.14.10` module if missing.
+2. Checks login status with `argocd account get-user-info`.
+3. Starts SSO if the login is missing or expired, then checks the session again.
+4. Checks access to the parent app before any Git operations.
 
-### Restarting, and getting a shell
-
-`restart` and `exec` are the odd ones out: they change nothing in the repo and
-make no commit. They do what the ArgoCD web UI's pod delete and terminal do.
+The default server is `hylas-argocd.diamond.ac.uk`; all server commands use
+`--grpc-web`. SSO launches a browser on the host running the tool, including
+over SSH with X11 forwarding, just like:
 
 ```bash
-dep restart fe22i-mo-ioc-01   # delete the pod; the StatefulSet recreates it
-dep exec fe22i-mo-ioc-01      # a bash prompt inside the running pod
+argocd login hylas-argocd.diamond.ac.uk --grpc-web --sso
 ```
 
-Because nothing is edited, no repo has to be worked out, so `-r`, `--no-git`
-and the current directory are all irrelevant here. `--dry-run` prints the
-command instead of running it. The script's exit status becomes the tool's, so
-a failure fails the command.
+Login, network or permission failures stop before Git changes. Module loading
+stays in the helper's child shell and does not load `ec/va` or change the
+Kubernetes context. `--dry-run` skips setup and login entirely.
 
-One service at a time — a glob is refused rather than restarting a beamline's
-worth of IOCs by accident. Both check the name against the cluster first, so a
-typo is an error rather than a silent no-op, and both say so rather than
-hanging if the IOC is stopped.
+| Environment variable | Default |
+|---|---|
+| `IOC_ARGOCD_SERVER` | `hylas-argocd.diamond.ac.uk` |
+| `IOC_ARGOCD_MODULE` | `argocd/v2.14.10` |
 
-`ioc-restart` and `ioc-exec` are embedded at build time. Set `restart_script`
-or `exec_script` in `[general]` to run a custom external executable instead;
-these overrides retain their own shebang and exit status.
+The server override applies to both login and sync. Argo CD setup does not use
+`EC_LOGIN` or `EC_TARGET`.
 
-They are normal shell scripts and work on their own:
+### Sync sequence and retries
 
-```bash
-./ioc-restart fe22i-mo-ioc-01
-./ioc-exec fe22i-mo-ioc-01
-./ioc-exec -n some-other-namespace -s sh fe22i-mo-ioc-01
-```
+After pushing, the tool refreshes the parent from Git and syncs only the
+selected child Application definitions. It then refreshes and syncs each
+selected service app, with pruning enabled. Each sync waits for completion
+before the next begins and has a 300-second timeout.
 
-Both put kubectl on PATH by sourcing the DLS cluster setup if your shell has not
-already done it (`KLOGIN` overrides where that lives). The namespace comes from
-`$EC_TARGET`, defaulting to `accelerator`. `ioc-exec` runs `bash`; `-s` or
-`$IOC_EXEC_SHELL` picks another, and it asks kubectl for a TTY only when it has
-one to give, so piping into it behaves.
+The child apps must match the service names and share the parent's Application
+namespace. The parent must track the repository and branch you push to.
+Child syncs apply **all pending changes in those selected apps**, including
+resource deletions; unrelated child definitions are excluded from the parent sync.
 
-Options: `-r/--repo`, `--config PATH`, `--list`, `--no-git`, `--dry-run`,
-`--force-sync`, `--argocd-app APP`.
-`--dry-run` touches nothing at all — no pull, no write, no commit.
+Your account needs permission to read and sync the apps, and the project's
+[sync windows must permit manual syncs](https://argo-cd.readthedocs.io/en/stable/user-guide/sync_windows/).
+`--force-sync` requests a normal manual sync; it does not change project policy
+or use Argo CD's force-apply option.
 
-### Several at once
+Uncommitted changes to `apps/values.yaml` are rejected with `--force-sync`.
+If a sync fails, the pushed Git changes remain. Fix the reported problem and
+repeat the command. A timeout may leave the server-side operation running;
+check it before retrying.
 
-`SERVICE` can be a glob. Every match goes into one commit and one push.
+## Restarting and opening a shell
 
-```bash
-dep stop 'fe15*'      # fe15i-cs-ioc-01, fe15i-mo-ioc-01, fe15i-py-ioc-01
-dep start 'fe[0-9]*'  # every fe IOC, but not fe-epics-* or fe-synoptic
-dep stop 'fe1[59]*'   # ? [abc] [0-9] [!x] all work
-```
+`restart` and `exec` act directly on the running pod without editing Git or
+resolving a deployment repo. They accept one service, reject globs, and report
+an error if the service is missing or stopped. `--dry-run` previews the action.
 
-**Quote the pattern.** zsh expands it against your filenames first and fails
-with `no matches found` before the script ever runs.
+Both use kubectl from PATH or source the Diamond cluster setup at
+`/dls_sw/kubernetes/klogin/1.0/acastus` if needed.
 
-A glob only ever selects entries already in the file, so it can never create
-one. Services already in the state you asked for are left alone, and if that is
-all of them nothing is committed.
+| Environment variable | Purpose |
+|---|---|
+| `KLOGIN` | Override the cluster setup script |
+| `EC_TARGET` | Kubernetes namespace; defaults to `accelerator` |
+| `IOC_EXEC_SHELL` | Shell for `exec`; defaults to `bash` |
+| `IOC_RESTART_TIMEOUT` | Rollout timeout for `restart`; defaults to `120s` |
 
-### Shorthand
+`exec` requests a TTY only when its input is a terminal. Helper exit statuses
+are passed through. To use custom external executables, set `restart_script`
+or `exec_script` under `[general]` in the configuration.
 
-`[<repo>.aliases]` in the config gives names to the patterns you type most:
-
-```bash
-dep stop cs           # every fe cs IOC
-dep start all -r fe   # every fe IOC
-```
-
-`--help` lists them, grouped by repo, straight from your config.
-
-## Which repo gets edited
-
-First of these that answers:
-
-1. `-r fe` — a config key, or a path to a checkout
-2. **the current directory**, if you are inside a `*-deployment` checkout
-3. **the service name** — a shorthand belongs to the repo that defines it,
-   otherwise the `[match]` globs in the config
-4. `[general] default`, if you set one
-
-It prints which repo it picked and why before changing anything, so you can see
-when it guessed differently from what you meant.
-
-```console
-$ dep --list
-config  /home/you/.config/deployment-repo-tool/config.ini
-fe         ok         /path/to/fe-deployment
-va         ok         /path/to/va-deployment
-id         NOT THERE  /path/to/id-deployment
-```
-
-## Config
+## Configuration
 
 ```ini
 [repos]
-fe = ~/work/containers/accelerator-repos/fe/fe-deployment
-va = ~/work/containers/accelerator-repos/va/va-deployment
+fe = ~/work/fe-deployment
+va = ~/work/va-deployment
 
 [match]
 fe = fe*
 va = sr*-va-ioc-*, va-*
-common = sr*-pfwd, common-*, carepeater
 
 [fe.aliases]
+all = fe[0-9]*
 cs = fe[0-9][0-9][ijkb]-cs-ioc-0[1-9]
+
+[fe.argocd]
+# Optional: inferred from fe-deployment if omitted.
+app = accelerator/fe
 
 [general]
 # default = fe
-# restart_script = /path/to/ioc-restart   # only to override the shipped ones
-# exec_script = /path/to/ioc-exec
+# restart_script = /path/to/custom-restart
+# exec_script = /path/to/custom-exec
 ```
 
-Read from the first of: `--config`, `$DEPLOYMENT_REPO_CONFIG`,
-`$XDG_CONFIG_HOME/deployment-repo-tool/config.ini` (`~/.config` if unset), then
-`config.ini` beside the binary (gitignored; the repo ships only
-`config.ini.example`). With no config at all it still works on whatever repo you
-are standing in.
+The first available configuration file is used, in this order:
 
-## Things that will catch you out
+1. `--config PATH`
+2. `$DEPLOYMENT_REPO_CONFIG`
+3. `$XDG_CONFIG_HOME/deployment-repo-tool/config.ini` (`~/.config` if unset)
+4. `config.ini` beside the binary
 
-- **Half-written globs cannot be traced to a repo.** `[match]` compares against
-  the argument as you typed it. `fe15*` matches `fe*` and lands on fe, but
-  `sr2*` has none of `-va-ioc-` in it yet, so it matches nothing. Write
-  `'sr2*-va-ioc-*'`, or say `-r va`. `sr*` on its own is no help either — it
-  cannot tell `sr22c-va-ioc-01` from `sr22c-pfwd` in common-deployment.
-- **The same shorthand in two repos is an error**, not a guess:
-  `'all' is a shorthand in fe and va - use -r to say which`.
-- **A service written inline** (`name: {enabled: true}`) is reported as missing
-  rather than edited. Nothing in these repos is written that way today.
+Without a config, the tool can use the deployment checkout containing the
+current directory. `ioc --list` shows the loaded configuration and repo paths.
 
-## What it does to your repo
+### Repository selection
 
-- `git pull --ff-only` before reading, so the edit lands on current content. A
-  diverged branch stops the tool rather than building a merge.
-- `git add`/`git commit` both name `apps/values.yaml`, so anything else you have
-  staged stays out of the commit.
-- Commit messages read `Stopping sr22c-va-ioc-01`, or
-  `Stopping 27 services (fe[0-9]*)` when the list would be too long.
-- Comments, key order and blank lines in `values.yaml` are preserved: the file
-  is edited line by line, never re-dumped by a YAML library. A trailing comment
-  next to `enabled:` survives the value changing.
+The first matching rule selects the checkout:
 
-Exit status is 0 on success (including "nothing to do"), 1 for anything the tool
-refuses, 2 for a bad command line.
+1. `-r`: a configured key or a checkout path
+2. The deployment checkout containing the current directory
+3. The service's alias, otherwise the `[match]` patterns
+4. `[general] default`
 
-## Tests
+The tool prints the selected repo and the reason before acting. Parent-app
+inference happens only after that repo is resolved and validated.
+
+`[match]` tests the service argument exactly as typed. A partial glob such as
+`sr2*` may not match `sr*-va-ioc-*`; use `'sr2*-va-ioc-*'` or `-r va`.
+If an alias is defined in more than one repo, use `-r` to disambiguate it.
+
+## Git behavior
+
+- Pulls with `--ff-only` before editing; a diverged branch stops the command.
+- Stages and commits only `apps/values.yaml`, leaving other staged files out.
+- Preserves comments, key order and blank lines by editing the file in place.
+- Uses messages such as `Stopping fe03i-mo-ioc-01`.
+- Makes no empty commit when settings already match.
+
+Services must use the block format shown in the example values files. Inline
+entries such as `name: {enabled: true}` are not supported by the editor.
+
+Exit status is 0 on success, 1 for tool failures, and 2 for invalid arguments.
+`restart` and `exec` return the helper's exit status.
+
+## Development and tests
+
+Edit `ioc-restart`, `ioc-exec` or `ioc-argocd` and run `make` to regenerate the
+embedded scripts and relink the binary. Reinstall `ioc` to distribute helper
+changes. The source scripts also remain runnable for development. Embedded
+helpers execute through Bash without temporary files.
 
 ```bash
-make check   # tests/unit.cpp, ~100 checks, instant
-make test    # those, then tests/test_tool.py: 257 checks, a few seconds
+make check   # C++ unit tests
+make test    # Unit tests and Python integration tests
+make clean   # Remove the binary and generated build files
 ```
 
-`make check` covers the parts written out by hand because C++ has no standard
-library equivalent — globbing, path handling, the ini parser, the diff.
-`tests/test_tool.py` drives the built binary as a black box and reloads every
-edit with a real YAML parser to prove the document still means what it should.
+`make test` requires uv, which supplies Python and PyYAML for the integration
+suite. With Python and PyYAML already installed, you can instead run
+`python3 tests/test_tool.py` and `python3 tests/test_sync.py` after building.
 
-That file declares its own dependency on PyYAML in a PEP 723 header, so uv
-handles it — nothing to install, and no virtualenv is left in the repo. Without
-uv: `pip install pyyaml && python3 tests/test_tool.py`.
-
-Everything runs against temporary copies of the fixtures in `tests/`, the git
-flow against a local bare remote, and the cluster actions against stub scripts.
-Your real deployment repos and the real cluster are never touched.
-
-`tests/test_sync.py` checks manual sync ordering and selection, previews,
-invalid options, dirty files, failed pushes, failed syncs and retries against
-temporary Git repositories and a stub `argocd` executable.
+Tests use temporary deployment repositories, local Git remotes and stubbed
+kubectl/Argo CD commands. They exercise copied binaries without sibling scripts,
+configured helper overrides, sync ordering, login recovery and failure handling.
+No real deployment repos or clusters are changed.
