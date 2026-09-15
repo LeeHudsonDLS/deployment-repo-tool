@@ -30,13 +30,11 @@ size_t indent_of(const std::string &line);
 // is appended tight against the last one rather than after a gap.
 std::pair<size_t, size_t> block(const Lines &lines);
 
-// Where one service is: its `  name:` line, and one past its last child line. A
-// service owns every following line indented deeper than its own name, so a
-// `labels:` block and anything nested under it comes along too.
-//
-// False when the name is not there, which for deploy means "add it". An entry
-// written on one line (`name: {enabled: true}`) does not match, so it is
-// reported as missing rather than mangled -- the safe direction to be wrong in.
+// Where one service is: its name line and one past its last content line.
+// Exact and glob lookup share the same service depth. Blank lines and comments
+// within an entry do not end it; trailing separators are left outside it.
+// False means absent. Inline values and duplicate names are rejected rather
+// than overwritten or mistaken for an absent service by deploy.
 bool find_service(const Lines &lines, const std::string &service, size_t *start,
                   size_t *end);
 
@@ -51,6 +49,7 @@ std::vector<std::string> select(const Lines &lines, const std::string &pattern,
 // Set `key: value` for the service, rewriting its line or adding one. A key
 // that is not there yet goes at the end of the entry, indented one level deeper
 // than the service name. Rewriting an existing key keeps any trailing `#`
-// comment, so a note beside `enabled:` is not lost.
+// comment, so a note beside `enabled:` is not lost. Only direct child keys
+// are edited. targetRevision is encoded as a YAML string.
 void set_key(Lines &lines, const std::string &service, const std::string &key,
              const std::string &value);

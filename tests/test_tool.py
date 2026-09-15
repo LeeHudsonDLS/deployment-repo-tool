@@ -168,6 +168,95 @@ def expected(source, names, action, revision=None):
     return out
 
 
+# Regression fixtures deliberately differ from the site's usual formatting.
+with tempfile.TemporaryDirectory(prefix="review-deployment-") as root:
+    os.makedirs(os.path.join(root, "apps"))
+    config = write_config(root, "va")
+    path = os.path.join(root, "apps", "values.yaml")
+    fixtures = [
+        ("nested enabled", "    settings:\n      enabled: true\n    enabled: true\n"),
+        ("blank line", "    targetRevision: main\n\n    enabled: true\n"),
+        ("unindented comment", "    targetRevision: main\n# keep this\n    enabled: true\n"),
+        ("unusual indent", "      settings:\n        enabled: true\n      enabled: true\n"),
+    ]
+    for label, body in fixtures:
+        raw = "services:\n  demo:\n" + body + "  other:\n    enabled: true\n"
+        open(path, "w").write(raw)
+        before = load(path)
+        proc = run(root, "stop", "demo", "-r", "va")
+        after = load(path)
+        check(label + ": succeeds", proc.returncode == 0, proc.stdout)
+        check(label + ": only service enabled changes",
+              changes(before, after) == {("demo", "enabled")} and
+              after["services"]["demo"]["enabled"] is False)
+        check(label + ": does not duplicate enabled",
+              open(path).read().count("enabled:") == raw.count("enabled:"))
+        edited = open(path).read()
+        run(root, "stop", "demo", "-r", "va")
+        check(label + ": idempotent", open(path).read() == edited)
+
+    for action, body in [("stop", "    labels:\n      enabled: true\n"),
+                         ("deploy", "    enabled: true\n")]:
+        raw = "services:\n  demo: {enabled: false}\n  other:\n" + body
+        open(path, "w").write(raw)
+        args = [action, "demo"] + (["main"] if action == "deploy" else [])
+        proc = run(root, *args, "-r", "va")
+        check(action + ": inline entry rejected unchanged",
+              proc.returncode != 0 and open(path).read() == raw, proc.stdout)
+
+    for label, raw, args in [
+        ("nested exact name", "services:\n  demo:\n    labels:\n      enabled: true\n",
+         ["stop", "labels"]),
+        ("duplicate service", "services:\n  demo:\n  demo:\n", ["stop", "demo"]),
+        ("duplicate key", "services:\n  demo:\n    enabled: true\n    enabled: false\n",
+         ["stop", "demo"]),
+        ("revision newline", "services:\n  demo:\n", ["deploy", "demo", "bad\nrevision"]),
+    ]:
+        open(path, "w").write(raw)
+        proc = run(root, *args, "-r", "va")
+        check(label + ": rejected unchanged",
+              proc.returncode != 0 and open(path).read() == raw, proc.stdout)
+
+    for revision in ["123", "true", "null", "2026-09-15", "1e3", "yes", "a'b", "a # b", "a: b", "main"]:
+        open(path, "w").write("services:\n  demo:\n    targetRevision: 'old#tag'  # keep note\n")
+        proc = run(root, "deploy", "demo", revision, "-r", "va")
+        check("revision remains a string: " + revision,
+              proc.returncode == 0 and load(path)["services"]["demo"]["targetRevision"] == revision,
+              proc.stdout)
+        edited = open(path).read()
+        check("revision comment preserved: " + revision, "  # keep note\n" in edited)
+        run(root, "deploy", "demo", revision, "-r", "va")
+        check("revision idempotent: " + revision, open(path).read() == edited)
+
+    env = dict(os.environ, DEPLOYMENT_REPO_CONFIG=config)
+    raw = open(path).read()
+    proc = subprocess.run([TOOL, "--config", os.path.join(root, "missing.ini"),
+                           "--no-git", "-r", "va", "stop", "demo"], cwd=root,
+                          env=env, capture_output=True, text=True)
+    check("missing explicit config cannot fall back",
+          proc.returncode != 0 and open(path).read() == raw, proc.stdout + proc.stderr)
+    bad_config = os.path.join(root, "bad.ini")
+    open(bad_config, "w").write("invalid config\n")
+    env["DEPLOYMENT_REPO_CONFIG"] = bad_config
+    proc = subprocess.run([TOOL, "--config", config, "--help"], cwd=root,
+                          env=env, capture_output=True, text=True)
+    check("explicit config bypasses invalid default, including help",
+          proc.returncode == 0 and "shorthand for SERVICE" in proc.stdout, proc.stderr)
+
+    # An unavailable or failing diff must stop before writing the values file.
+    fake_bin = os.path.join(root, "bin")
+    os.mkdir(fake_bin)
+    for status in [None, 2]:
+        if status is not None:
+            fake_diff = os.path.join(fake_bin, "diff")
+            open(fake_diff, "w").write("#!/bin/sh\nexit 2\n")
+            os.chmod(fake_diff, 0o755)
+        proc = subprocess.run([TOOL, "--config", config, "--no-git", "-r", "va", "stop", "demo"],
+                              cwd=root, env=dict(os.environ, PATH=fake_bin),
+                              capture_output=True, text=True)
+        check("diff failure leaves values untouched: " + str(status),
+              proc.returncode != 0 and open(path).read() == raw, proc.stderr)
+
 # ------------------------------------------------------------- single service
 
 case("stop", ["stop", "sr21c-va-ioc-01"],

@@ -133,12 +133,18 @@ std::vector<std::string> Config::section_names() const {
 }
 
 LoadedConfig read_config(const std::string &given) {
+    if (!given.empty()) {
+        if (!is_file(given)) fail("no config file at " + given);
+        LoadedConfig loaded;
+        loaded.config.parse(read_file(given), given);
+        loaded.path = given;
+        return loaded;
+    }
     const char *from_environment = std::getenv("DEPLOYMENT_REPO_CONFIG");
     const char *xdg = std::getenv("XDG_CONFIG_HOME");
     const std::string home = (xdg && *xdg) ? std::string(xdg) : expanduser("~/.config");
 
     std::vector<std::string> candidates;
-    if (!given.empty()) candidates.push_back(given);
     if (from_environment && *from_environment) candidates.push_back(from_environment);
     candidates.push_back(path_join(path_join(home, "deployment-repo-tool"), CONFIG_NAME));
     // Last resort: a config.ini next to the binary. The repo ships only
@@ -155,9 +161,6 @@ LoadedConfig read_config(const std::string &given) {
         return loaded;
     }
 
-    // Only an explicitly named one is an error to be missing; the rest of the
-    // chain is allowed to come up empty.
-    if (!given.empty()) fail("no config file at " + given);
     return LoadedConfig();
 }
 

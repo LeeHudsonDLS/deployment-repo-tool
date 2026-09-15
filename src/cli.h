@@ -37,6 +37,7 @@ struct Args {
     std::string revision;
     std::string repo;    // -r/--repo
     std::string config;  // --config
+    bool help = false;
     bool list = false;
     bool no_git = false;
     bool dry_run = false;
@@ -44,10 +45,8 @@ struct Args {
     std::string argocd_app;
 };
 
-// The config is only needed so that --help can list the shorthand each repo
-// defines; building it from whatever config is loaded is what stops the help
-// and the config drifting apart.
-Args parse_args(int argc, char **argv, const Config &config);
+Args parse_args(int argc, char **argv);
+void show_help(const Config &config);
 
 // Reports a mistyped command the way argparse did -- usage, then the message --
 // and exits 2.

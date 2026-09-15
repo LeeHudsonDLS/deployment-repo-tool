@@ -16,7 +16,8 @@ except for running the binary instead of the interpreter.
 ## Hard constraints
 
 - **Standard library only.** No third-party libraries, no package manager, no
-  vendored code. `make` and a compiler is the whole toolchain, and that is the
+  vendored code. System `diff` (GNU diffutils) is an approved runtime dependency
+  for previews, alongside Git. `make` and a compiler is the whole build toolchain, and that is the
   point: nothing to install, nothing to keep up to date, nothing to go missing.
   That includes build-time extras: `-static-libstdc++` is worth having and is
   used when it works, but the Makefile probes for it rather than requiring it,
@@ -145,30 +146,28 @@ Do not silently reverse these:
 
 ## Known limitations
 
-- An entry written inline (`name: {enabled: true}`) does not match the pattern
-  `find_service()` looks for, so it is reported as missing rather than mangled.
-  Deliberate: safe direction, though the message is a little misleading.
+- Inline service mappings (`name: {enabled: true}`) are recognised but rejected
+  for every editing action, including deploy, so they cannot become duplicates.
 - `[match]` compares against the SERVICE argument as typed, so a half-written
   glob like `sr2*` identifies no repo. Documented in README.md and config.ini.
-- `find_service()` matches a name at any indent, so typing the exact name of a
-  key nested under an entry (`stop labels`) reaches that key. A glob cannot —
-  `select()` only counts lines at the depth of the first entry. Inherited from
-  the python and pinned by a check in `tests/unit.cpp` rather than fixed,
-  because changing it would change what the tool does.
-- The unified diff is Myers rather than difflib's SequenceMatcher. Same output
-  on everything this tool produces, and it gives up past 2000 differing lines
-  and reports the region as wholly replaced rather than carrying the memory for
-  it. Nothing this tool does gets near that.
+- Exact lookup and glob selection share service boundaries. Nested names are
+  not services, and only direct child settings are rewritten. Blank lines and
+  comments within a service do not terminate it.
+- Unified previews use system `diff -u` through anonymous temporary files,
+  without a shell. Exit 1 means differences; other failures stop before writing.
+- Revisions are quoted when necessary to preserve their YAML string type;
+  control characters are rejected.
 
 ## Verifying a change
 
 ```bash
 make check   # tests/unit.cpp, instant
-make test    # builds, then check, then tests/test_tool.py: 257 checks
+make test    # builds, then unit, tool integration and sync tests
 ```
 
 `make check` covers the pieces written out by hand because C++ has no standard
-library equivalent: globbing, path handling, the ini parser, the diff. Those are
+library equivalent: globbing, path handling and the ini parser. It also tests
+system diff output through the wrapper. Those are
 where a subtle mistake changes which services a command picks *without* causing
 an obvious failure, so test them directly rather than only through the tool.
 

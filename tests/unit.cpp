@@ -9,8 +9,8 @@
 // where a subtle mistake would quietly change which services a command picks
 // rather than causing an obvious failure.
 //
-// Nothing here touches a deployment repo or the cluster; there is no filesystem
-// or process involved at all.
+// Nothing here touches a deployment repo or the cluster. Diff checks use
+// anonymous temporary files and the system diff executable.
 
 #include <cstdlib>
 #include <iostream>
@@ -235,13 +235,8 @@ void test_values() {
           find_service(lines, "va-epics-pvcs", &start, &end) && start == 3 && end == 4);
     check("values: a name that is not there is not found",
           !find_service(lines, "sr99c-va-ioc-01", &start, &end));
-    // find_service goes by name at any depth, exactly as the python's find()
-    // did -- `labels` is a key under an entry and is found as though it were
-    // one. Depth is what select() enforces, so a glob can never reach it; only
-    // typing a nested key's name exactly gets here. Pinned rather than fixed,
-    // because changing it would change what the tool does.
-    check("values: a nested key is reached by its exact name",
-          find_service(lines, "labels", &start, &end) && start == 7);
+    check("values: an exact name cannot reach a nested key",
+          !find_service(lines, "labels", &start, &end));
 
     const Options no_aliases;
     equal("select: a plain name passes through even if absent",
@@ -257,6 +252,10 @@ void test_values() {
     aliases.push_back(std::make_pair(std::string("all"), std::string("sr2*")));
     equal("select: a shorthand becomes its pattern",
           join(select(lines, "all", aliases), " "), "sr21c-va-ioc-01 sr22c-va-ioc-01");
+
+    aliases.push_back({"one", "sr21c-va-ioc-01"});
+    equal("select: shorthand may name one service",
+          join(select(lines, "one", aliases), " "), "sr21c-va-ioc-01");
 
     Lines edited = document();
     set_key(edited, "sr21c-va-ioc-01", "enabled", "false");
@@ -323,6 +322,11 @@ void test_diff() {
     removed.erase(removed.begin() + 1);
     equal("diff: a line removed", unified_diff(numbered(3), removed, "f", "f"),
           "--- f\n+++ f\n@@ -1,3 +1,2 @@\n l0\n-l1\n l2\n");
+
+    equal("diff: missing final newline is marked",
+          unified_diff({"old"}, {"new\n"}, "a file; $literal", "a file; $literal"),
+          "--- a file; $literal\n+++ a file; $literal\n"
+          "@@ -1 +1 @@\n-old\n\\ No newline at end of file\n+new\n");
 
     equal("diff: from nothing", unified_diff(Lines(), numbered(2), "f", "f"),
           "--- f\n+++ f\n@@ -0,0 +1,2 @@\n+l0\n+l1\n");

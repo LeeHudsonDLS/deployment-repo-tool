@@ -119,7 +119,7 @@ std::string shorthand_help(const Config &config) {
     return "\nshorthand for SERVICE, by repo:\n" + out;
 }
 
-void show_help(const Config &config) {
+void print_help(const Config &config) {
     std::cout << usage_line() << "\n\n"
               << DESCRIPTION << "\n\n"
               << "positional arguments:\n"
@@ -171,7 +171,9 @@ void usage_error(const std::string &message) {
     std::exit(2);
 }
 
-Args parse_args(int argc, char **argv, const Config &config) {
+void show_help(const Config &config) { print_help(config); }
+
+Args parse_args(int argc, char **argv) {
     if (argc > 0 && argv[0] && *argv[0]) program_name = basename(argv[0]);
 
     Args args;
@@ -201,7 +203,7 @@ Args parse_args(int argc, char **argv, const Config &config) {
                 have_value = true;
             }
             const LongOption *option = match_long_option(name);
-            if (std::string(option->name) == "help") show_help(config);
+            if (std::string(option->name) == "help") args.help = true;
             if (option->takes_value && !have_value) {
                 if (i + 1 >= argc) {
                     usage_error(format("argument --%s: expected one argument",
@@ -217,7 +219,7 @@ Args parse_args(int argc, char **argv, const Config &config) {
         }
 
         // Short options. Only -h and -r exist; -rva is the same as -r va.
-        if (arg[1] == 'h') show_help(config);
+        if (arg == "-h") { args.help = true; continue; }
         if (arg[1] != 'r') usage_error("unrecognized argument: " + arg);
         if (arg.size() > 2) {
             args.repo = arg.substr(2);

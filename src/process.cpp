@@ -29,13 +29,17 @@ void flush_before_handing_over() { std::cout.flush(); }
 
 }  // namespace
 
-int run(const std::vector<std::string> &argv) {
+int run(const std::vector<std::string> &argv, int stdout_fd) {
     if (argv.empty()) fail("nothing to run");
     flush_before_handing_over();
 
     const pid_t child = fork();
     if (child < 0) fail(format("cannot start %s: %s", argv[0].c_str(), strerror(errno)));
     if (child == 0) {
+        if (stdout_fd >= 0 && dup2(stdout_fd, STDOUT_FILENO) < 0) {
+            std::cerr << "error: cannot redirect stdout: " << strerror(errno) << std::endl;
+            _exit(127);
+        }
         std::vector<char *> raw = raw_argv(argv);
         execvp(raw[0], raw.data());
         // Still here, so the exec failed. 127 is what a shell reports for a

@@ -23,7 +23,7 @@ Runtime requirements depend on the action:
 
 | Action | External tools |
 |---|---|
-| `start`, `stop`, `deploy` | Git |
+| `start`, `stop`, `deploy` | Git and system `diff` (GNU diffutils) |
 | `--force-sync` | Bash and Argo CD |
 | `restart`, `exec` | Bash and kubectl |
 
@@ -76,6 +76,12 @@ pushes and syncs, so the same command can retry a previous failure.
 | `-h`, `--help` | Show usage and configured aliases |
 
 `--force-sync` cannot be combined with `--no-git`.
+
+Edits preserve comments and spacing, including blank lines within services.
+Only direct service settings are changed. Inline service mappings such as
+`demo: {enabled: true}` are rejected; expand them into an indented mapping first.
+Revisions are quoted when needed to keep them YAML strings. An explicitly named
+`--config` file must exist; it never falls back to another configuration.
 
 ### Multiple services and aliases
 

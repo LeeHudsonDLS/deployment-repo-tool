@@ -110,12 +110,10 @@ void on_cluster(const Config &config, const Action &action, const std::string &s
 }  // namespace
 
 int main(int argc, char **argv) {
-    // Read once before parsing, only so that --help can list the shorthand.
-    LoadedConfig loaded = read_config(std::string());
-    const Args args = parse_args(argc, argv, loaded.config);
-    // --config has to be read again now that it has been seen.
-    if (!args.config.empty()) loaded = read_config(args.config);
+    const Args args = parse_args(argc, argv);
+    LoadedConfig loaded = read_config(args.config);
     const Config &config = loaded.config;
+    if (args.help) show_help(config);
 
     if (args.force_sync && (args.no_git || args.list ||
                            args.action == "restart" || args.action == "exec")) {
