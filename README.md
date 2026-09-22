@@ -19,6 +19,21 @@ install -m 755 ioc ~/bin/ioc
 Ensure `~/bin` is on your PATH. **Copy only `ioc`**: all three helper scripts
 are embedded in the binary. A symlink or alias to the built binary also works.
 
+`ioc --version` reports the Git version embedded at build time. A clean tagged
+checkout reports the tag (for example, `ioc v1.0.0`); commits after it report
+`v1.0.0-3-gabc1234`, and tracked local changes add `-dirty`. Before the first
+tag it reports the commit ID; builds without Git metadata report `unknown`.
+Run `make` again after tagging to update the binary. Git is not needed to
+display the installed binary's version.
+
+To mark a release after committing its changes:
+
+```bash
+git tag -a v1.0.0 -m "Release v1.0.0"
+make
+./ioc --version
+```
+
 Runtime requirements depend on the action:
 
 | Action | External tools |
@@ -71,7 +86,7 @@ pushes and syncs, so the same command can retry a previous failure.
 | `--list` | Show configured repos and whether their paths exist |
 | `--dry-run` | Preview without writing files, running Git, loading modules or contacting the cluster |
 | `--no-git` | Edit the values file without pulling, committing or pushing |
-| `--force-sync` | Manually sync after pushing; for `start`, `stop` and `deploy` only |
+| `--force-sync` | Manually sync after pushing with `start`, `stop` or `deploy`; without a command, sync only |
 | `--argocd-app APP` | Override the inferred parent app; requires `--force-sync` |
 | `-h`, `--help` | Show usage and configured aliases |
 
@@ -111,7 +126,20 @@ To request a manual sync after pushing:
 
 ```bash
 ioc stop fe03i-mo-ioc-01 --force-sync
+ioc deploy fe03i-mo-ioc-01 2026_sd3 --force-sync
 ```
+
+To sync without editing files or running any Git operations:
+
+```bash
+ioc --force-sync fe03i-mo-ioc-01
+ioc --force-sync 'fe03*' -r fe
+```
+
+A service name, shorthand or quoted glob is required. This syncs only the
+selected child definitions and service apps.
+Repo selection and `--argocd-app` work as usual. Add `--dry-run` to preview.
+Local edits and unpushed commits are left alone; Argo CD uses its remote source.
 
 The tool resolves the deployment checkout first, then infers `accelerator/fe`
 from the directory name `fe-deployment`. The namespace defaults to
@@ -170,7 +198,8 @@ Your account needs permission to read and sync the apps, and the project's
 `--force-sync` requests a normal manual sync; it does not change project policy
 or use Argo CD's force-apply option.
 
-Uncommitted changes to `apps/values.yaml` are rejected with `--force-sync`.
+Uncommitted changes to `apps/values.yaml` are rejected when combining an editing
+command with `--force-sync`.
 If a sync fails, the pushed Git changes remain. Fix the reported problem and
 repeat the command. A timeout may leave the server-side operation running;
 check it before retrying.

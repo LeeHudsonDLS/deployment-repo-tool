@@ -27,6 +27,7 @@
 #include "repo.h"
 #include "support.h"
 #include "values.h"
+#include "version.h"
 
 namespace {
 
@@ -111,13 +112,17 @@ void on_cluster(const Config &config, const Action &action, const std::string &s
 
 int main(int argc, char **argv) {
     const Args args = parse_args(argc, argv);
+    if (args.version) {
+        std::cout << "ioc " << IOC_VERSION << std::endl;
+        return 0;
+    }
     LoadedConfig loaded = read_config(args.config);
     const Config &config = loaded.config;
     if (args.help) show_help(config);
 
     if (args.force_sync && (args.no_git || args.list ||
                            args.action == "restart" || args.action == "exec")) {
-        usage_error("--force-sync requires start, stop or deploy with git enabled");
+        usage_error("--force-sync requires start, stop, deploy or no action; incompatible with --no-git and --list");
     }
     if (!args.argocd_app.empty() && !args.force_sync) {
         usage_error("--argocd-app requires --force-sync");
@@ -127,7 +132,11 @@ int main(int argc, char **argv) {
         show_repos(config, loaded.path);
         return 0;
     }
-    if (args.action.empty() || args.service.empty()) {
+    const bool sync_only = args.force_sync && args.action.empty();
+    if (sync_only && args.service.empty()) {
+        usage_error("--force-sync needs a service, e.g. --force-sync sr22c-va-ioc-01");
+    }
+    if (!sync_only && (args.action.empty() || args.service.empty())) {
         usage_error("give an action and a service, e.g. stop sr22c-va-ioc-01");
     }
     if (args.action == "deploy" && args.revision.empty()) {
@@ -140,7 +149,7 @@ int main(int argc, char **argv) {
     // follows: no repo to pick, nothing to pull, edit, commit or push. The
     // third positional is deploy's revision and means nothing here; catching it
     // beats silently ignoring a mistyped command.
-    if (action->script) {
+    if (action && action->script) {
         if (!args.revision.empty()) {
             usage_error(format("%s takes only a service name", action->name));
         }
@@ -165,6 +174,14 @@ int main(int argc, char **argv) {
         }
     }
     if (args.force_sync) check_sync_names(parent, {});
+    if (sync_only) {
+        const auto targets = select(split_lines(read_file(path)), args.service,
+                                    config.section(repo.key + ".aliases"));
+        check_sync_names(parent, targets);
+        if (!args.dry_run) prepare_argocd(parent);
+        sync_apps(parent, targets, args.dry_run, false);
+        return 0;
+    }
     if (args.force_sync && !args.dry_run) prepare_argocd(parent);
 
     // Pull before reading, so the edit is made against what is really deployed.

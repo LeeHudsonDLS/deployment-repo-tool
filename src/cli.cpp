@@ -34,6 +34,7 @@ struct LongOption {
 };
 
 const LongOption LONG_OPTIONS[] = {
+    {"version", false},
     {"force-sync", false}, {"argocd-app", true},
     {"help", false},   {"repo", true},   {"config", true},
     {"list", false},   {"no-git", false}, {"dry-run", false},
@@ -49,7 +50,7 @@ std::string action_choices(const std::string &separator) {
 std::string usage_line() {
     // Continuation lines line up under the first argument, as argparse's did.
     const std::string indent(std::string("usage: ").size() + program_name.size() + 1, ' ');
-    return "usage: " + program_name + " [-h] [-r REPO] [--config PATH] [--list]\n" +
+    return "usage: " + program_name + " [-h] [--version] [-r REPO] [--config PATH] [--list]\n" +
            indent + "[--no-git] [--dry-run] [--force-sync] [--argocd-app APP]\n" + indent + "[{" + action_choices(",") +
            "}] [SERVICE] [revision]";
 }
@@ -91,13 +92,15 @@ const char *DESCRIPTION =
 const char *OPTION_HELP =
     "options:\n"
     "  -h, --help            show this help message and exit\n"
+    "  --version             show the build's Git tag or commit and exit\n"
     "  -r REPO, --repo REPO  which deployment repo: a key from the config, or a\n"
     "                        path to a checkout\n"
     "  --config PATH         config file to use\n"
     "  --list                show the configured repos and exit\n"
     "  --no-git              edit the file only: no pull, commit or push\n"
     "  --dry-run             show the change, write nothing\n"
-    "  --force-sync          after pushing, manually sync parent and service apps\n"
+    "  --force-sync          manually sync parent and service apps after pushing;\n"
+    "                        without an action, sync only (SERVICE required)\n"
     "  --argocd-app APP      override parent app (default: accelerator/<repo name>\n"
     "                        without -deployment, or [<repo>.argocd] app)";
 
@@ -153,6 +156,7 @@ const LongOption *match_long_option(const std::string &name) {
 }
 
 void store(Args *args, const std::string &name, const std::string &value) {
+    if (name == "version") args->version = true;
     if (name == "repo") args->repo = value;
     else if (name == "force-sync") args->force_sync = true;
     else if (name == "argocd-app") args->argocd_app = value;
@@ -230,6 +234,11 @@ Args parse_args(int argc, char **argv) {
         }
     }
 
+    if (args.force_sync && (positionals.empty() || !find_action(positionals[0]))) {
+        if (positionals.size() > 1) usage_error("--force-sync without an action takes one service");
+        if (!positionals.empty()) args.service = positionals[0];
+        return args;
+    }
     if (positionals.size() > 3) {
         std::vector<std::string> extra(positionals.begin() + 3, positionals.end());
         usage_error("unrecognized arguments: " + join(extra, " "));

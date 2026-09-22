@@ -35,13 +35,15 @@ void check_sync_names(const std::string &parent, const std::vector<std::string> 
 }
 
 void sync_apps(const std::string &parent, const std::vector<std::string> &services,
-               bool dry_run) {
+               bool dry_run, bool pushed) {
     const size_t slash = parent.find('/');
     const std::string prefix = slash == std::string::npos ? "" : parent.substr(0, slash + 1);
     auto command = [&](const std::vector<std::string> &argv) {
         std::cout << (dry_run ? "would run: " : "running: ") << join(argv, " ") << std::endl;
         if (!dry_run && run_argocd(std::vector<std::string>(argv.begin() + 1, argv.end())) != 0) {
-            fail("Argo CD failed; Git changes remain pushed. Check the reported app, "
+            fail(std::string("Argo CD failed; ") +
+                 (pushed ? "Git changes remain pushed. " : "No Git operations have been performed. ") +
+                 "Check the reported app, "
                  "login, permissions and manual-sync window policy, then rerun "
                  "the same command with --force-sync to retry");
         }

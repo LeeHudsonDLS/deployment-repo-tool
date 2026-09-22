@@ -454,6 +454,13 @@ says("foreign shorthand explains itself", ["stop", "cs"],
      "'cs' is a shorthand in fe", cwd=VA_REPO)
 says("--list shows each repo and its state", ["--list"], "fe         ok")
 
+# Version is embedded and needs neither a deployment checkout nor valid config.
+versioned = subprocess.run([TOOL, "--version", "--config", "/missing/config.ini"],
+                           cwd=ROOT, text=True, capture_output=True)
+check("--version works without config", versioned.returncode == 0 and
+      versioned.stdout.startswith("ioc ") and len(versioned.stdout.split()) == 2,
+      versioned.stdout + versioned.stderr)
+
 # With no config at all it must still work the way it did before there was one:
 # on the repo the current directory is in.
 BARE = tempfile.mkdtemp(prefix="bare-")

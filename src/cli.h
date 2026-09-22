@@ -38,6 +38,7 @@ struct Args {
     std::string repo;    // -r/--repo
     std::string config;  // --config
     bool help = false;
+    bool version = false;
     bool list = false;
     bool no_git = false;
     bool dry_run = false;

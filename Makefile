@@ -53,7 +53,7 @@ EMBED    := $(BUILD)/embed
 HELPERS  := ioc-restart ioc-exec ioc-argocd
 GENERATED := $(BUILD)/embedded_helpers.h
 
-.PHONY: all check test clean
+.PHONY: all check test clean FORCE
 
 all: $(BIN)
 
@@ -70,6 +70,14 @@ $(GENERATED): $(HELPERS) $(EMBED) Makefile
 	$(EMBED) $(HELPERS) > $@.tmp && mv $@.tmp $@
 
 $(BUILD)/helpers.o: $(GENERATED)
+
+# Check every build: tags and dirty state can change without source timestamps.
+# Preserve the header timestamp when unchanged to avoid needless recompilation.
+$(BUILD)/version.h: FORCE | $(BUILD)
+	(git describe --tags --always --dirty 2>/dev/null || echo unknown) | sed 's/\\/\\\\/g; s/"/\\"/g; s/^/#define IOC_VERSION "/; s/$$/"/' > $@.tmp
+	cmp -s $@.tmp $@ && rm $@.tmp || mv $@.tmp $@
+
+$(BUILD)/main.o: $(BUILD)/version.h
 
 $(UNIT): tests/unit.cpp $(LIB_OBJ) | $(BUILD)
 	$(CXX) $(CXXFLAGS) -Isrc tests/unit.cpp $(LIB_OBJ) -o $@ $(LDFLAGS)

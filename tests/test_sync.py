@@ -64,8 +64,9 @@ if args == ['account', 'get-user-info'] or '--output' in args:
 if args == ['version', '--client']:
     sys.exit(0)
 # Every Argo call must happen after the requested setting reaches the remote.
-assert subprocess.check_output(['git', 'rev-parse', 'HEAD']) == subprocess.check_output(
-    ['git', 'ls-remote', 'origin', 'refs/heads/main']).split()[0] + b'\\n'
+if not os.environ.get('SYNC_ONLY'):
+    assert subprocess.check_output(['git', 'rev-parse', 'HEAD']) == subprocess.check_output(
+        ['git', 'ls-remote', 'origin', 'refs/heads/main']).split()[0] + b'\\n'
 with open(os.environ['SYNC_LOG'], 'a') as out:
     out.write(json.dumps(args) + '\\n')
 sys.exit(1 if os.environ.get('SYNC_FAIL') == ' '.join(args[:3]) else 0)
@@ -102,6 +103,59 @@ sys.exit(1 if os.environ.get('SYNC_FAIL') == ' '.join(args[:3]) else 0)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.git("rev-parse", "HEAD"), head)
         self.assertEqual(len(self.calls()), 12)
+
+    def test_deploy_sync_and_retry(self):
+        result = self.run_tool('deploy', 'fe-new', '2026_sd3', '--force-sync')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("targetRevision: '2026_sd3'", self.values.read_text())
+        self.assertEqual(self.calls(), [
+            ['app', 'get', 'accelerator/fe', '--hard-refresh'],
+            ['app', 'sync', 'accelerator/fe', '--timeout', '300', '--resource',
+             'argoproj.io:Application:accelerator/fe-new'],
+            ['app', 'get', 'accelerator/fe-new', '--hard-refresh'],
+            ['app', 'sync', 'accelerator/fe-new', '--prune', '--timeout', '300'],
+        ])
+        head = self.git('rev-parse', 'HEAD')
+        result = self.run_tool('deploy', 'fe-new', '2026_sd3', '--force-sync')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.git('rev-parse', 'HEAD'), head)
+        self.assertEqual(len(self.calls()), 8)
+
+    def test_standalone_sync_skips_git_and_preserves_files(self):
+        self.env['SYNC_ONLY'] = '1'
+        git = self.base / 'git'
+        git.write_text('#!/bin/sh\necho unexpected-git >&2\nexit 99\n')
+        git.chmod(0o755)
+        self.values.write_text(self.values.read_text() + '# local edit\n')
+        before = self.values.read_bytes()
+        for selection in [('fe-one',), ('fe-*',)]:
+            with self.subTest(selection=selection):
+                self.log.unlink(missing_ok=True)
+                result = self.run_tool('--force-sync', *selection)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertNotIn('unexpected-git', result.stderr)
+                self.assertEqual(self.values.read_bytes(), before)
+                expected_count = 6 if selection == ('fe-*',) else 4
+                self.assertEqual(len(self.calls()), expected_count)
+
+    def test_standalone_preview_validation_and_failure(self):
+        for options in [(), ('--dry-run',), ('--argocd-app', 'accelerator/fe')]:
+            result = self.run_tool('--force-sync', *options)
+            self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+            self.assertIn('--force-sync needs a service', result.stderr)
+        self.assertEqual(self.calls(), [])
+        result = self.run_tool('--force-sync', 'fe-one', '--dry-run')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('would run: argocd app sync accelerator/fe', result.stdout)
+        self.assertEqual(self.calls(), [])
+        self.assertEqual(self.run_tool('--force-sync', 'fe-one', 'extra').returncode, 2)
+        self.assertEqual(self.run_tool('--force-sync', '--no-git').returncode, 2)
+        self.assertEqual(self.run_tool('--force-sync', 'missing-*').returncode, 1)
+        self.env['SYNC_FAIL'] = 'app sync accelerator/fe'
+        result = self.run_tool('--force-sync', 'fe-one')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('No Git operations have been performed', result.stderr)
+        self.assertNotIn('Git changes remain pushed', result.stderr)
 
     def test_preview_and_invalid_combinations(self):
         before = self.values.read_text()
