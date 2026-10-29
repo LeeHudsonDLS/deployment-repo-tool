@@ -77,6 +77,8 @@ ioc ACTION SERVICE [REVISION] [options]
 | `exec` | Open a shell in the running pod |
 | `status` | Show where each service's pod runs; read-only, takes globs and aliases, or `--node NODE` |
 
+The revision given to `deploy` is a branch or tag of the **services repository**, and it must contain the service's folder. It does not directly select the IOC software release: that is set in the service's own `values.yaml`.
+
 `start` and `stop` require an existing service. If the requested settings are
 already in Git, no new commit is made. With `--force-sync`, the tool still
 pushes and syncs, so the same command can retry a previous failure.
