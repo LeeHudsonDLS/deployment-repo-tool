@@ -12,6 +12,8 @@
 // for the editing, glob.h and diff.h for the two standard library pieces python
 // had and C++ does not.
 
+#include <algorithm>
+#include <cstdlib>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -108,6 +110,135 @@ void on_cluster(const Config &config, const Action &action, const std::string &s
     run_replacing_self(argv);
 }
 
+// Columns padded to their widest cell, two spaces apart, like kubectl's.
+void print_table(const std::vector<std::vector<std::string>> &rows) {
+    std::vector<size_t> width;
+    for (const auto &row : rows) {
+        if (width.size() < row.size()) width.resize(row.size(), 0);
+        for (size_t i = 0; i < row.size(); i++) width[i] = std::max(width[i], row[i].size());
+    }
+    for (const auto &row : rows) {
+        std::string line;
+        for (size_t i = 0; i < row.size(); i++) {
+            line += row[i];
+            if (i + 1 < row.size()) line += std::string(width[i] - row[i].size() + 2, ' ');
+        }
+        std::cout << line << "\n";
+    }
+    std::cout.flush();
+}
+
+// status: where each service's pod is running, next to what the repo says.
+//
+// Unlike restart and exec it takes a glob or shorthand, because "which node is
+// everything on" is the question, and asking it changes nothing. That is also
+// why the repo is read but not pulled: a status check that rewrites your
+// checkout would be a surprise. What it shows from Git is the local checkout.
+//
+// The cluster half is ioc-status, which prints one line per pod; this only
+// lines those up against the services asked for, so a stopped IOC still gets
+// a row saying so rather than silently missing from the table.
+void status(const Config &config, const Action &action, const Args &args) {
+    if (!args.revision.empty()) usage_error("status takes only a service name");
+
+    std::vector<std::string> names;
+    Lines lines;
+    std::vector<std::string> script_args;
+    if (!args.node.empty()) {
+        script_args = {"--node", args.node};
+    } else {
+        const Repo repo = resolve_repo(config, args.repo, args.service);
+        check_repo(repo.root, repo.why);
+        std::cout << "repo    " << (repo.key.empty() ? "" : repo.key + "  ") << repo.root
+                  << "  (" << repo.why << "; local checkout, not pulled)\n";
+        lines = split_lines(read_file(path_join(repo.root, VALUES)));
+        Options aliases;
+        if (!repo.key.empty()) aliases = config.section(repo.key + ".aliases");
+        names = select(lines, args.service, aliases);
+        script_args = names;
+    }
+
+    const std::string script = helper_script(config, action);
+    if (args.dry_run) {
+        std::cout << "would run: " << (script.empty() ? action.script : script)
+                  << (script.empty() ? " (embedded) " : " ") << join(script_args, " ")
+                  << std::endl;
+        return;
+    }
+    std::vector<std::string> argv = script.empty()
+        ? embedded_helper(action.script, script_args)
+        : std::vector<std::string>{script};
+    if (!script.empty()) argv.insert(argv.end(), script_args.begin(), script_args.end());
+
+    // The script has already said what went wrong on stderr; pass its status
+    // on so a failed lookup cannot look like an empty, healthy table.
+    std::string output;
+    const int code = run_capture(argv, &output);
+    // 3 is ioc-status saying this machine is off the primary network and it
+    // did not try the cluster. The repo half is still a right answer, so show
+    // that alone; --node has nothing without the cluster.
+    const bool cluster = code == 0;
+    if (code != 0 && (code != 3 || !args.node.empty())) {
+        std::cout.flush();
+        std::exit(code);
+    }
+
+    // SERVICE NODE STATUS RESTARTS AGE POD, after a header line.
+    std::vector<std::vector<std::string>> pods;
+    const std::vector<std::string> printed = split_lines(output);
+    for (size_t i = 1; i < printed.size(); i++) {
+        const std::vector<std::string> fields = split_list(printed[i]);
+        if (fields.size() >= 5) pods.push_back(fields);
+    }
+
+    std::vector<std::vector<std::string>> rows;
+    if (!args.node.empty()) {
+        rows.push_back({"SERVICE", "NODE", "STATUS", "RESTARTS", "AGE"});
+        for (const auto &pod : pods) rows.push_back({pod[0], pod[1], pod[2], pod[3], pod[4]});
+        if (pods.empty()) {
+            std::cout << "no pods on " << args.node << std::endl;
+            return;
+        }
+        print_table(rows);
+        return;
+    }
+
+    if (cluster) {
+        rows.push_back({"SERVICE", "ENABLED", "REVISION", "NODE", "STATUS", "RESTARTS", "AGE"});
+    } else {
+        rows.push_back({"SERVICE", "ENABLED", "REVISION"});
+    }
+    // No targetRevision of its own means the service runs the source: default.
+    const std::string inherited = default_revision(lines);
+    for (const std::string &name : names) {
+        size_t start, end;
+        const bool listed = find_service(lines, name, &start, &end);
+        // No enabled key means running, the same as the editing actions read it.
+        std::string enabled = listed ? get_key(lines, name, "enabled") : "-";
+        if (enabled.empty()) enabled = "true";
+        std::string revision = listed ? get_key(lines, name, "targetRevision") : "-";
+        if (revision.empty()) {
+            revision = inherited.empty() ? "-" : inherited;
+        }
+        if (!cluster) {
+            rows.push_back({name, enabled, revision});
+            continue;
+        }
+
+        bool found = false;
+        for (const auto &pod : pods) {
+            if (pod[0] != name) continue;
+            rows.push_back({name, enabled, revision, pod[1], pod[2], pod[3], pod[4]});
+            found = true;
+        }
+        if (!found) {
+            const char *why = !listed ? "not in repo" : enabled == "false" ? "stopped" : "no pod";
+            rows.push_back({name, enabled, revision, "-", why, "-", "-"});
+        }
+    }
+    print_table(rows);
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -121,11 +252,19 @@ int main(int argc, char **argv) {
     if (args.help) show_help(config);
 
     if (args.force_sync && (args.no_git || args.list ||
-                           args.action == "restart" || args.action == "exec")) {
+                           args.action == "restart" || args.action == "exec" ||
+                           args.action == "status")) {
         usage_error("--force-sync requires start, stop, deploy or no action; incompatible with --no-git and --list");
     }
     if (!args.argocd_app.empty() && !args.force_sync) {
         usage_error("--argocd-app requires --force-sync");
+    }
+
+    if (!args.node.empty() && args.action != "status") {
+        usage_error("--node is for status only, e.g. status --node NODE");
+    }
+    if (!args.node.empty() && !args.service.empty()) {
+        usage_error("status takes a service or --node, not both");
     }
 
     if (args.list) {
@@ -136,7 +275,8 @@ int main(int argc, char **argv) {
     if (sync_only && args.service.empty()) {
         usage_error("--force-sync needs a service, e.g. --force-sync sr22c-va-ioc-01");
     }
-    if (!sync_only && (args.action.empty() || args.service.empty())) {
+    if (!sync_only && (args.action.empty() ||
+                       (args.service.empty() && args.node.empty()))) {
         usage_error("give an action and a service, e.g. stop sr22c-va-ioc-01");
     }
     if (args.action == "deploy" && args.revision.empty()) {
@@ -144,6 +284,11 @@ int main(int argc, char **argv) {
     }
 
     const Action *action = find_action(args.action);
+
+    if (args.action == "status") {
+        status(config, *action, args);
+        return 0;
+    }
 
     // These act on the cluster, not the repo, so they take none of what
     // follows: no repo to pick, nothing to pull, edit, commit or push. The

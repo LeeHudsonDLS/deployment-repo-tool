@@ -20,3 +20,8 @@ int run(const std::vector<std::string> &argv, int stdout_fd = -1);
 // there is no wrapper process between the terminal and the remote shell to
 // swallow a Ctrl-C. Only returns by failing.
 [[noreturn]] void run_replacing_self(const std::vector<std::string> &argv);
+
+// Runs the command with its stdout collected into *output rather than shown;
+// stderr stays on the terminal, so the command's own errors still reach the
+// user. Returns the exit status as run() does.
+int run_capture(const std::vector<std::string> &argv, std::string *output);

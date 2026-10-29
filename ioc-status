@@ -1,0 +1,133 @@
+#!/bin/bash
+# Show which node each IOC's pod is on, and how it is doing.
+# Read-only: the cluster side of `ioc status`.
+#
+#   ioc-status fe03i-mo-ioc-01 fe03i-cs-ioc-01    those IOCs' pods
+#   ioc-status --node NODE                       every pod on that node
+#
+# Prints a header, then one line per pod, whitespace separated:
+#   SERVICE NODE STATUS RESTARTS AGE POD
+# The tool parses these columns, so keep them in this order. An IOC with no
+# pod (stopped, or not deployed) prints nothing.
+# Exits 3, without touching kubectl, when this machine is not on the primary
+# network (IOC_PRIMARY_NETWORK, default 172.23.192.0/20).
+
+set -euo pipefail
+
+NAMESPACE=${EC_TARGET:-accelerator}
+KLOGIN=${KLOGIN:-/dls_sw/kubernetes/klogin/1.0/acastus}
+
+usage() {
+    echo "Usage: ${0##*/} [-n NAMESPACE] <ioc-name>..." >&2
+    echo "       ${0##*/} [-n NAMESPACE] --node <node>" >&2
+    echo "  e.g. ${0##*/} fe22i-mo-ioc-01" >&2
+    exit 1
+}
+
+node=
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -n) [[ $# -ge 2 ]] || usage; NAMESPACE=$2; shift 2 ;;
+        --node) [[ $# -ge 2 ]] || usage; node=$2; shift 2 ;;
+        -h|--help) usage ;;
+        -*) usage ;;
+        *) break ;;
+    esac
+done
+
+if [[ -n $node ]]; then
+    [[ $# -eq 0 ]] || usage
+else
+    [[ $# -ge 1 ]] || usage
+fi
+
+# The cluster is only reachable from the primary network. Rather than try and
+# wait for a timeout off-site, look at our own addresses and say so at once.
+# Exit 3 means "not on the network": the tool then shows the repo state alone.
+NETWORK=${IOC_PRIMARY_NETWORK:-172.23.192.0/20}
+
+ip_number() {
+    local a b c d
+    IFS=. read -r a b c d <<< "$1"
+    echo $(( (a << 24) | (b << 16) | (c << 8) | d ))
+}
+
+on_network() {
+    local base=${NETWORK%/*} bits=${NETWORK#*/} mask addr
+    mask=$(( bits == 0 ? 0 : (0xffffffff << (32 - bits)) & 0xffffffff ))
+    # hostname -I is the quick answer; ip is the fallback where it is missing.
+    for addr in $(hostname -I 2>/dev/null ||
+                  ip -4 -o addr show 2>/dev/null | awk '{sub(/\/.*/, "", $4); print $4}'); do
+        [[ $addr =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
+        (( ($(ip_number "$addr") & mask) == ($(ip_number "$base") & mask) )) && return 0
+    done
+    return 1
+}
+
+if ! on_network; then
+    echo "not on the primary network ($NETWORK) - cluster not queried" >&2
+    exit 3
+fi
+
+# Put kubectl on PATH, unless the calling shell has already done it.
+if ! command -v kubectl >/dev/null 2>&1; then
+    if [[ ! -r $KLOGIN ]]; then
+        echo "kubectl not on PATH and cannot read $KLOGIN" >&2
+        echo "Set \$KLOGIN, or source your cluster setup before running." >&2
+        exit 1
+    fi
+    # klogin is not written to run under `set -eu`, so relax it while sourcing.
+    set +eu
+    # shellcheck disable=SC1090
+    source "$KLOGIN"
+    set -eu
+
+    command -v kubectl >/dev/null 2>&1 || {
+        echo "kubectl still not on PATH after sourcing $KLOGIN" >&2
+        exit 1
+    }
+fi
+
+# One query however many IOCs are asked about: a whole ring's worth one
+# kubectl at a time would take minutes. Pods are found by their app label, as
+# ioc-restart deletes them.
+if [[ -n $node ]]; then
+    select=(--field-selector "spec.nodeName=$node")
+else
+    names=$(IFS=,; echo "$*")
+    select=(-l "app in ($names)")
+fi
+
+columns=APP:.metadata.labels.app,POD:.metadata.name,NODE:.spec.nodeName
+columns+=,PHASE:.status.phase,WAITING:.status.containerStatuses[0].state.waiting.reason
+columns+=,DELETING:.metadata.deletionTimestamp
+columns+=,RESTARTS:.status.containerStatuses[0].restartCount,STARTED:.status.startTime
+
+# A backstop only: the network check above is what keeps it quick off-site.
+pods=$(kubectl get pods --request-timeout=10s -n "$NAMESPACE" "${select[@]}" --no-headers -o "custom-columns=$columns")
+
+# kubectl's own STATUS column is computed client side and not available to
+# custom-columns, so rebuild the useful part: a pod going away, then a
+# container stuck waiting (CrashLoopBackOff, ImagePullBackOff), then the phase.
+age() {
+    [[ $1 == "<none>" ]] && { echo -; return; }
+    local seconds
+    seconds=$(( $(date +%s) - $(date -d "$1" +%s) )) || { echo -; return; }
+    if (( seconds >= 86400 )); then echo "$((seconds / 86400))d"
+    elif (( seconds >= 3600 )); then echo "$((seconds / 3600))h"
+    elif (( seconds >= 60 )); then echo "$((seconds / 60))m"
+    else echo "${seconds}s"
+    fi
+}
+
+echo "SERVICE NODE STATUS RESTARTS AGE POD"
+while read -r app pod where phase waiting deleting restarts started; do
+    [[ -n ${pod:-} ]] || continue
+    [[ $app == "<none>" ]] && app=$pod
+    [[ $where == "<none>" ]] && where=-
+    status=$phase
+    [[ $waiting != "<none>" ]] && status=$waiting
+    [[ $deleting != "<none>" ]] && status=Terminating
+    [[ $restarts == "<none>" ]] && restarts=-
+    echo "$app $where $status $restarts $(age "$started") $pod"
+done <<< "$pods"

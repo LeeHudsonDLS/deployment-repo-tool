@@ -50,7 +50,7 @@ OBJ      := $(patsubst src/%.cpp,$(BUILD)/%.o,$(SRC))
 LIB_OBJ  := $(filter-out $(BUILD)/main.o,$(OBJ))
 UNIT     := $(BUILD)/unit
 EMBED    := $(BUILD)/embed
-HELPERS  := ioc-restart ioc-exec ioc-argocd
+HELPERS  := ioc-restart ioc-exec ioc-argocd ioc-status
 GENERATED := $(BUILD)/embedded_helpers.h
 
 .PHONY: all check test clean FORCE

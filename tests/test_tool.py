@@ -614,7 +614,9 @@ with open(os.path.join(KUBE_BIN, "kubectl"), "w") as handle:
 os.chmod(os.path.join(KUBE_BIN, "kubectl"), 0o755)
 KUBE_RECORD = os.path.join(CLUSTER, "kubectl-calls")
 kube_env = dict(PATH=KUBE_BIN + os.pathsep + os.environ["PATH"],
-                KUBE_RECORD=KUBE_RECORD, EC_TARGET="accelerator")
+                KUBE_RECORD=KUBE_RECORD, EC_TARGET="accelerator",
+                # Any address counts as the primary network, so status queries.
+                IOC_PRIMARY_NETWORK="0.0.0.0/0")
 for action in sorted(ACTIONS):
     for binary in (ALONE_TOOL, LINKED):
         open(KUBE_RECORD, "w").close()
@@ -636,6 +638,92 @@ for action in sorted(ACTIONS):
     check("%s: embedded preview does not run kubectl" % action,
           proc.returncode == 0 and "(embedded)" in proc.stdout
           and not open(KUBE_RECORD).read())
+
+# status is a cluster action that does read the repo: a glob or shorthand is
+# expanded against values.yaml, and the script's rows are lined up against it.
+STATUS_STUB = os.path.join(CLUSTER, "ioc-status")
+with open(STATUS_STUB, "w") as handle:
+    handle.write('#!/bin/bash\nprintf "%s\\n" status "$@" > ' + RECORD + '\n'
+                 'echo "SERVICE NODE STATUS RESTARTS AGE POD"\n'
+                 'echo "sr21c-va-ioc-01 node-a Running 2 3d sr21c-va-ioc-01-0"\n'
+                 'exit ${STUB_EXIT:-0}\n')
+os.chmod(STATUS_STUB, 0o755)
+status_cfg = configparser.ConfigParser(interpolation=None)
+status_cfg["repos"] = {"va": CLUSTER_REPO}
+status_cfg["va.aliases"] = {"all": "sr2[0-9]c-va-ioc-*"}
+status_cfg["general"] = {"status_script": STATUS_STUB}
+STATUS_CFG = os.path.join(CLUSTER, "status.ini")
+with open(STATUS_CFG, "w") as handle:
+    status_cfg.write(handle)
+
+check("status: the tool offers it as an action", "status" in helped)
+untouched = open(VALUES_PATH).read()
+proc = ran("status", "all", "-r", "va", config=STATUS_CFG, cwd=CLUSTER)
+check("status: a shorthand passes every matching name to the script",
+      (recorded() or [""])[0] == "status" and
+      sorted(recorded()[1:]) == ["sr20c-va-ioc-01", "sr21c-va-ioc-01", "sr22c-va-ioc-01",
+                                 "sr23c-va-ioc-01", "sr24c-va-ioc-02"], recorded())
+rows = dict((line.split()[0], line.split()) for line in proc.stdout.splitlines()
+            if line.startswith("sr"))
+check("status: a running pod shows its node",
+      proc.returncode == 0 and rows.get("sr21c-va-ioc-01", [None] * 4)[3] == "node-a",
+      proc.stdout)
+check("status: a stopped service without a pod still gets a row",
+      rows.get("sr22c-va-ioc-01", [None] * 5)[1:5:3] == ["false", "stopped"], proc.stdout)
+check("status: values.yaml was not touched", open(VALUES_PATH).read() == untouched)
+check("status: no override shows the inherited source revision",
+      rows.get("sr20c-va-ioc-01", [None] * 3)[2] == "main"
+      and rows.get("sr21c-va-ioc-01", [None] * 3)[2] == "2026_sd3", proc.stdout)
+
+# Off the primary network the script answers 3 without trying the cluster, and
+# the repo half is shown alone.
+proc = ran("status", "all", "-r", "va", config=STATUS_CFG, env={"STUB_EXIT": "3"})
+check("status: off the network, the repo state alone and success",
+      proc.returncode == 0 and "NODE" not in proc.stdout
+      and "sr21c-va-ioc-01  true     2026_sd3" in proc.stdout, proc.stdout)
+proc = ran("status", "--node", "node-a", config=STATUS_CFG, env={"STUB_EXIT": "3"})
+check("status --node: off the network is a failure", proc.returncode == 3, proc.stdout)
+
+proc = ran("status", "--node", "node-a", config=STATUS_CFG, cwd=CLUSTER)
+check("status --node: passed to the script, no repo needed",
+      proc.returncode == 0 and recorded() == ["status", "--node", "node-a"]
+      and "node-a" in proc.stdout, proc.stdout + str(recorded()))
+proc = ran("status", "--node", "node-a", config=STATUS_CFG, env={"STUB_EXIT": "4"})
+check("status: the script's exit status is passed on", proc.returncode == 4)
+for label, args in (("--node with another action", ["stop", "--node", "n"]),
+                    ("--node with a service", ["status", "sr21c-va-ioc-01", "--node", "n"]),
+                    ("a revision", ["status", "sr21c-va-ioc-01", "2026_sd3"]),
+                    ("--force-sync", ["status", "sr21c-va-ioc-01", "--force-sync"])):
+    proc = ran(*args, config=STATUS_CFG)
+    check("status: %s is a usage error" % label,
+          proc.returncode == 2 and recorded() is None, proc.stdout.strip()[-200:])
+proc = ran("--dry-run", "status", "sr21c-va-ioc-01", config=STATUS_CFG)
+check("status: --dry-run ran nothing",
+      "would run" in proc.stdout and recorded() is None, proc.stdout)
+
+# The embedded script, against a stub kubectl: one query for all the names.
+open(KUBE_RECORD, "w").close()
+proc = ran("status", "sr2[12]c-va-ioc-01", tool=ALONE_TOOL, config=BARE_CLUSTER_CFG,
+           env=kube_env)
+calls = open(KUBE_RECORD).read()
+check("status: embedded helper makes one kubectl query for every name",
+      proc.returncode == 0 and calls.count("get pods") == 1
+      and "-l app in (sr21c-va-ioc-01,sr22c-va-ioc-01)" in calls, proc.stdout + calls)
+open(KUBE_RECORD, "w").close()
+proc = ran("status", "--node", "node-a", tool=ALONE_TOOL, config=BARE_CLUSTER_CFG,
+           env=kube_env, cwd=CLUSTER)
+calls = open(KUBE_RECORD).read()
+check("status --node: embedded helper selects pods by node",
+      proc.returncode == 0 and "--field-selector spec.nodeName=node-a" in calls,
+      proc.stdout + calls)
+
+open(KUBE_RECORD, "w").close()
+proc = ran("status", "sr2[12]c-va-ioc-01", tool=ALONE_TOOL, config=BARE_CLUSTER_CFG,
+           env=dict(kube_env, IOC_PRIMARY_NETWORK="192.0.2.0/24"))
+check("status: embedded helper off the network never runs kubectl",
+      proc.returncode == 0 and not open(KUBE_RECORD).read()
+      and "not on the primary network" in proc.stdout and "NODE" not in proc.stdout,
+      proc.stdout)
 
 shutil.rmtree(CLUSTER, ignore_errors=True)
 

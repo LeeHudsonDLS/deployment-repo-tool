@@ -53,3 +53,12 @@ std::vector<std::string> select(const Lines &lines, const std::string &pattern,
 // are edited. targetRevision is encoded as a YAML string.
 void set_key(Lines &lines, const std::string &service, const std::string &key,
              const std::string &value);
+
+// The value of a direct child `key:` of the service, without any trailing
+// comment or quotes; empty if the service or the key is not there. Read-only,
+// for status.
+std::string get_key(const Lines &lines, const std::string &service, const std::string &key);
+
+// source.targetRevision at the top of the file: what every service without its
+// own targetRevision runs. Empty if there is none.
+std::string default_revision(const Lines &lines);

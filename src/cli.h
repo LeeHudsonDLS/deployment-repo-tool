@@ -17,7 +17,7 @@
 #include "config.h"
 
 // What the tool can be asked to do. `script` is null for the actions that edit
-// the repo, and names the shell script to hand the service to for the two that
+// the repo, and names the shell script to hand the service to for the ones that
 // act on the cluster instead. Adding a cluster action is a line here and a
 // script in the build-time embedded helpers.
 struct Action {
@@ -44,6 +44,7 @@ struct Args {
     bool dry_run = false;
     bool force_sync = false;
     std::string argocd_app;
+    std::string node;  // --node, status only
 };
 
 Args parse_args(int argc, char **argv);

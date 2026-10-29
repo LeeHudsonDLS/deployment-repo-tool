@@ -33,8 +33,8 @@ except for running the binary instead of the interpreter.
   available.** Re-dumping the document destroys the comments, key order and
   spacing that make these files readable and reviewable, and the diff on every
   commit becomes noise. It is edited as lines of text on purpose.
-- **The helper scripts stay shell scripts.** `ioc-restart` and `ioc-exec` are
-  not modules and nothing links them; the cluster actions shell out. A new one
+- **The helper scripts stay shell scripts.** `ioc-restart`, `ioc-exec` and `ioc-status`
+  are not modules and nothing links them; the cluster actions shell out. A new one
   is warranted only by a new cluster action, and the author decides that.
 
 ## How it is laid out
@@ -67,7 +67,7 @@ The python this came from started at 897 lines, was cut to 145 after the author
 objected to the size, and grew back only where a feature was asked for. That
 still applies. Before adding anything, ask whether it was requested. Prefer the
 smallest change that works, and do not restore features that were deliberately
-cut (status/list of services, colour output, `git ls-remote` revision checking,
+cut (a list of every service, colour output, `git ls-remote` revision checking,
 close-match suggestions for typos, atomic writes, push-race rebase retry,
 per-edit verification passes).
 
@@ -115,6 +115,12 @@ Do not silently reverse these:
   them through `resolve_repo` for consistency's sake — there is no file to find.
   The `ACTIONS` table in `cli.h` is what makes an action work this way: a script
   name instead of null, and a script beside the tool, is all a new one needs.
+- **`status` is the exception, at the author's request.** It is read-only, so
+  it takes globs, aliases and `--node`, and it reads `values.yaml` (without
+  pulling) to expand them and show `enabled`/`targetRevision`. The script
+  prints one line per pod and the C++ lines them up against the services asked
+  for, so a stopped IOC still gets a row. Keep the script's column order in
+  step with the parser in `main.cpp`.
 - **They refuse a glob.** Batch restarting was explicitly not asked for, and a
   whole beamline's IOCs going down at once is not a good accident.
 - **They refuse a third positional.** It is `deploy`'s revision and means
@@ -130,10 +136,10 @@ Do not silently reverse these:
   rollout: none of it belongs in the C++, which locates a script and passes one
   name. They stay runnable on their own — do not make them depend on being
   called by the tool.
-- **The kubectl/klogin preamble is duplicated between the two scripts, on
+- **The kubectl/klogin preamble is duplicated between the cluster scripts, on
   purpose.** Factoring it into a third, sourced-only file was offered and
   turned down: each script stays independently runnable and obvious. If a bug
-  is found in that block, fix it in both.
+  is found in that block, fix it in all of them.
 - **The shipped scripts are found through `/proc/self/exe`, not `argv[0]`.**
   Installing the tool by symlinking it onto PATH is documented, and that gives
   the real file rather than the link, so the sibling is looked for next to the

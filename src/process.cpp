@@ -4,10 +4,12 @@
 #include <unistd.h>
 
 #include <cerrno>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <vector>
+#include <memory>
 
 #include "support.h"
 
@@ -68,4 +70,21 @@ void run_replacing_self(const std::vector<std::string> &argv) {
     // Reached only when the script could not be started at all -- not
     // executable, or a shebang line naming an interpreter that is not there.
     fail(format("cannot run %s: %s", argv[0].c_str(), strerror(errno)));
+}
+
+int run_capture(const std::vector<std::string> &argv, std::string *output) {
+    // tmpfile rather than a pipe: no reader thread, and the file is unlinked
+    // already, so nothing is left behind however this ends.
+    std::unique_ptr<FILE, decltype(&std::fclose)> file(std::tmpfile(), &std::fclose);
+    if (!file) fail("cannot create temporary file for " + argv[0] + " output");
+    const int status = run(argv, fileno(file.get()));
+    if (std::fseek(file.get(), 0, SEEK_SET) != 0) fail("cannot rewind " + argv[0] + " output");
+    output->clear();
+    char buffer[4096];
+    size_t count;
+    while ((count = std::fread(buffer, 1, sizeof(buffer), file.get())) != 0) {
+        output->append(buffer, count);
+    }
+    if (std::ferror(file.get())) fail("cannot read " + argv[0] + " output");
+    return status;
 }

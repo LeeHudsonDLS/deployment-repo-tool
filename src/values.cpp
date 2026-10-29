@@ -148,3 +148,37 @@ void set_key(Lines &lines, const std::string &service, const std::string &key,
         lines[found] = replacement + note + "\n";
     } else lines.insert(lines.begin() + static_cast<long>(end), replacement + "\n");
 }
+
+std::string get_key(const Lines &lines, const std::string &service, const std::string &key) {
+    size_t start, end;
+    if (!find_service(lines, service, &start, &end)) return std::string();
+    // Same depth rule as set_key, so status reads exactly the line an edit
+    // would rewrite and not a same-named key nested further down.
+    size_t depth = std::string::npos;
+    for (size_t i = start + 1; i < end; ++i) {
+        if (!ignored(lines[i])) depth = std::min(depth, indent_of(lines[i]));
+    }
+    for (size_t i = start + 1; i < end; ++i) {
+        if (indent_of(lines[i]) != depth || !starts_with(lstrip(lines[i]), key + ":")) continue;
+        std::string value = strip(lines[i].substr(0, comment_at(lines[i])));
+        value = strip(value.substr(key.size() + 1));
+        if (value.size() >= 2 && (value.front() == '\'' || value.front() == '"') &&
+            value.back() == value.front()) value = value.substr(1, value.size() - 2);
+        return value;
+    }
+    return std::string();
+}
+
+std::string default_revision(const Lines &lines) {
+    size_t i = 0;
+    while (i < lines.size() && rstrip(lines[i]) != "source:") ++i;
+    for (++i; i < lines.size() && (ignored(lines[i]) || starts_with(lines[i], " ")); ++i) {
+        const std::string text = strip(lines[i].substr(0, comment_at(lines[i])));
+        if (!starts_with(text, "targetRevision:")) continue;
+        std::string value = strip(text.substr(std::string("targetRevision:").size()));
+        if (value.size() >= 2 && (value.front() == '\'' || value.front() == '"') &&
+            value.back() == value.front()) value = value.substr(1, value.size() - 2);
+        return value;
+    }
+    return std::string();
+}

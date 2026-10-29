@@ -40,7 +40,7 @@ Runtime requirements depend on the action:
 |---|---|
 | `start`, `stop`, `deploy` | Git and system `diff` (GNU diffutils) |
 | `--force-sync` | Bash and Argo CD |
-| `restart`, `exec` | Bash and kubectl |
+| `restart`, `exec`, `status` | Bash and kubectl |
 
 The binary needs a compatible Linux architecture and C runtime. Build on the
 oldest system you need to support. The build links the C++ runtime statically
@@ -59,6 +59,9 @@ ioc deploy fe03i-mo-ioc-01 2026_sd3
 ioc stop fe03i-mo-ioc-01 --force-sync
 ioc restart fe03i-mo-ioc-01
 ioc exec fe03i-mo-ioc-01
+ioc status fe03i-mo-ioc-01
+ioc status all -r va
+ioc status --node NODE
 ```
 
 ```text
@@ -72,6 +75,7 @@ ioc ACTION SERVICE [REVISION] [options]
 | `deploy` | Enable the service and set `targetRevision`; takes a revision and can add a new service |
 | `restart` | Delete the running pod and wait for its StatefulSet to recreate it |
 | `exec` | Open a shell in the running pod |
+| `status` | Show where each service's pod runs; read-only, takes globs and aliases, or `--node NODE` |
 
 `start` and `stop` require an existing service. If the requested settings are
 already in Git, no new commit is made. With `--force-sync`, the tool still
@@ -224,6 +228,42 @@ Both use kubectl from PATH or source the Diamond cluster setup at
 are passed through. To use custom external executables, set `restart_script`
 or `exec_script` under `[general]` in the configuration.
 
+## Where an IOC is running
+
+`status` shows which node each service's pod is on, next to what the local
+checkout says. It changes nothing and does not pull, so the Git columns are as
+of your last pull. It takes a name, quoted glob or alias, like `stop`:
+
+```text
+$ ioc status 'sr2[12]*' -r va
+repo    va  .../va-deployment  (-r va; local checkout, not pulled)
+SERVICE          ENABLED  REVISION  NODE         STATUS            RESTARTS  AGE
+sr20c-va-ioc-01  true     main      k8s-node-02  Running           0         9d
+sr21c-va-ioc-01  true     2026_sd3  k8s-node-07  Running           0         3d
+sr22c-va-ioc-01  false    2026_sd3  -            stopped           -         -
+```
+
+A service with no `targetRevision` of its own shows the `source:`
+`targetRevision` at the top of `values.yaml`, which it inherits.
+
+STATUS is `Terminating`, a waiting reason such as `CrashLoopBackOff`, or the pod
+phase. A service without a pod shows `stopped` (`enabled: false`), `no pod`, or
+`not in repo`. All names are looked up in one kubectl query.
+
+The cluster is only reachable from the primary network, so `status` first checks
+this machine's own addresses against `172.23.192.0/20` (override with
+`IOC_PRIMARY_NETWORK`). Off that network it never tries kubectl: it says so and
+shows ENABLED and REVISION alone, still exiting 0. `--node` has nothing to show
+there and fails.
+To list everything on one node, which needs no repo:
+
+```bash
+ioc status --node k8s-node-07
+```
+
+It uses the same kubectl setup and `EC_TARGET` as `restart` and `exec`; set
+`status_script` under `[general]` to override the helper.
+
 ## Configuration
 
 ```ini
@@ -287,11 +327,11 @@ Services must use the block format shown in the example values files. Inline
 entries such as `name: {enabled: true}` are not supported by the editor.
 
 Exit status is 0 on success, 1 for tool failures, and 2 for invalid arguments.
-`restart` and `exec` return the helper's exit status.
+`restart`, `exec` and `status` return the helper's exit status.
 
 ## Development and tests
 
-Edit `ioc-restart`, `ioc-exec` or `ioc-argocd` and run `make` to regenerate the
+Edit `ioc-restart`, `ioc-exec`, `ioc-status` or `ioc-argocd` and run `make` to regenerate the
 embedded scripts and relink the binary. Reinstall `ioc` to distribute helper
 changes. The source scripts also remain runnable for development. Embedded
 helpers execute through Bash without temporary files.

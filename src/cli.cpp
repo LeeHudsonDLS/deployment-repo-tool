@@ -14,6 +14,7 @@
 const Action ACTIONS[] = {
     {"start", nullptr},          {"stop", nullptr}, {"deploy", nullptr},
     {"restart", "ioc-restart"},  {"exec", "ioc-exec"},
+    {"status", "ioc-status"},
 };
 const size_t ACTION_COUNT = sizeof(ACTIONS) / sizeof(ACTIONS[0]);
 
@@ -38,6 +39,7 @@ const LongOption LONG_OPTIONS[] = {
     {"force-sync", false}, {"argocd-app", true},
     {"help", false},   {"repo", true},   {"config", true},
     {"list", false},   {"no-git", false}, {"dry-run", false},
+    {"node", true},
 };
 const size_t LONG_OPTION_COUNT = sizeof(LONG_OPTIONS) / sizeof(LONG_OPTIONS[0]);
 
@@ -51,7 +53,7 @@ std::string usage_line() {
     // Continuation lines line up under the first argument, as argparse's did.
     const std::string indent(std::string("usage: ").size() + program_name.size() + 1, ' ');
     return "usage: " + program_name + " [-h] [--version] [-r REPO] [--config PATH] [--list]\n" +
-           indent + "[--no-git] [--dry-run] [--force-sync] [--argocd-app APP]\n" + indent + "[{" + action_choices(",") +
+           indent + "[--no-git] [--dry-run] [--force-sync] [--argocd-app APP]\n" + indent + "[--node NODE]\n" + indent + "[{" + action_choices(",") +
            "}] [SERVICE] [revision]";
 }
 
@@ -61,21 +63,25 @@ std::string usage_line() {
 // C++ that half lives in the header comments instead.
 const char *DESCRIPTION =
     "Start, stop and deploy services in an ArgoCD \"*-deployment\" repo, and\n"
-    "restart or open a shell in a running one.\n"
+    "restart, open a shell in or show the status of a running one.\n"
     "\n"
     "    dep start sr22c-va-ioc-01\n"
     "    dep stop sr22c-va-ioc-01\n"
     "    dep deploy sr22c-va-ioc-01 2026_sd3\n"
     "    dep restart fe22i-mo-ioc-01\n"
     "    dep exec fe22i-mo-ioc-01\n"
+    "    dep status all -r va\n"
+    "    dep status --node NODE\n"
     "\n"
     "start, stop and deploy edit apps/values.yaml, then pull, commit and push.\n"
     "restart and exec change nothing at all: they act on the running pod, and are\n"
     "the ArgoCD web UI's pod delete and terminal.\n"
+    "status changes nothing either: it shows each service's enabled and\n"
+    "targetRevision in the local checkout, and the node and state of its pod.\n"
     "\n"
-    "For start, stop and deploy the service can be a glob, selecting every matching\n"
-    "entry in one commit. Quote it, or the shell expands it first (\"no matches\n"
-    "found\" in zsh):\n"
+    "For start, stop, deploy and status the service can be a glob, selecting\n"
+    "every matching entry (in one commit, for the first three). Quote it, or the\n"
+    "shell expands it first (\"no matches found\" in zsh):\n"
     "\n"
     "    dep stop 'fe15*'    # fe15i-cs-ioc-01, -mo-, -py-\n"
     "\n"
@@ -102,7 +108,8 @@ const char *OPTION_HELP =
     "  --force-sync          manually sync parent and service apps after pushing;\n"
     "                        without an action, sync only (SERVICE required)\n"
     "  --argocd-app APP      override parent app (default: accelerator/<repo name>\n"
-    "                        without -deployment, or [<repo>.argocd] app)";
+    "                        without -deployment, or [<repo>.argocd] app)\n"
+    "  --node NODE           status only, in place of SERVICE: every pod on NODE";
 
 // The [<repo>.aliases] sections, for the bottom of --help. Built from the
 // config that is actually loaded, so the help cannot drift from it.
@@ -127,14 +134,15 @@ void print_help(const Config &config) {
               << DESCRIPTION << "\n\n"
               << "positional arguments:\n"
               << "  {" << action_choices(",") << "}\n"
-              << "                        restart and exec act on the running pod and\n"
-              << "                        change nothing in the repo; the rest edit it\n"
+              << "                        restart, exec and status act on the running\n"
+              << "                        pod and change nothing in the repo; the rest\n"
+              << "                        edit it\n"
               << "  SERVICE               service name as it appears in " << VALUES
               << ", a\n"
               << "                        quoted glob like 'fe15*' to do several at\n"
               << "                        once, or one of the shorthand names below\n"
               << "  revision              branch or tag; deploy only, and refused by\n"
-              << "                        restart and exec\n\n"
+              << "                        restart, exec and status\n\n"
               << OPTION_HELP << "\n"
               << shorthand_help(config);
     std::cout.flush();
@@ -164,6 +172,7 @@ void store(Args *args, const std::string &name, const std::string &value) {
     else if (name == "list") args->list = true;
     else if (name == "no-git") args->no_git = true;
     else if (name == "dry-run") args->dry_run = true;
+    else if (name == "node") args->node = value;
 }
 
 }  // namespace
