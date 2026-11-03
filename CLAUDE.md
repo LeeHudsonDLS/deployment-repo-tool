@@ -1,8 +1,9 @@
 # Working on deployment-repo-tool
 
 `deployment-repo-tool` edits the `services:` block of `apps/values.yaml` in a
-Diamond ArgoCD `*-deployment` repo, then pulls, commits and pushes. `config.ini`
-says where the repos are and what the shorthand names mean. See README.md for
+Diamond ArgoCD `*-deployment` repo on GitLab, then commits and pushes, working
+from its own cached bare clone rather than a checkout. `builtin.ini`, compiled
+in, says where the repos are and what the shorthand names mean. See README.md for
 what it does; this file is about changing it.
 
 It is C++ in `src/`, built by `make` into a binary at the top of the checkout.
@@ -45,6 +46,7 @@ One concern per module, each with the reasoning in its header:
     src/cli.*        the command line, and the table of actions
     src/config.*     the ini file
     src/repo.*       which deployment repo a command means
+    src/remote.*     the cached bare clone: fetch, commit, push
     src/values.*     editing the services block
     src/glob.*       shell-style name matching  (python: fnmatch)
     src/diff.*       the unified diff           (python: difflib)
@@ -79,24 +81,33 @@ headers, next to the declaration it is about.
 
 Do not silently reverse these:
 
-- **Current directory beats inference.** If you are inside a `*-deployment`
-  checkout, that is the repo, even when `[match]` would point elsewhere.
-  Inference-first was tried and rejected: standing in your own clone and having
-  the tool edit and push from a different one is a foot-gun.
-- **But only a checkout with an `apps/values.yaml` in it counts.** Having the
-  file is what makes a directory a deployment repo; the name test alone is not
-  enough, because this tool's own source tree is called `deployment-repo-tool`
-  and passes it. Standing in the checkout you just cloned and built — the
-  documented way to install it — used to claim the command and then refuse it
-  for having nothing to edit. The trade is that a genuine `*-deployment`
-  checkout missing its `apps/values.yaml` now falls through to inference
-  instead of erroring; it is not a usable checkout either way, and `check_repo`
-  still catches one named explicitly with `-r`.
+- **No checkouts: each repo is edited through a bare clone the tool owns**,
+  at `~/.cache/deployment-repo-tool/<repo>.git`, at the author's request. This
+  replaced editing the user's checkout, and with it went `pull --ff-only`, the
+  uncommitted-changes check for `--force-sync`, `--no-git`, `-r PATH` and
+  choosing the repo from the current directory (and the "only a checkout with
+  `apps/values.yaml` counts" rule that went with it). The cache has no working
+  tree and holds no work of its own, so it can never be dirty or diverged.
+- **The commit is built with plumbing, not a working tree**: fetch, `git show`
+  the file at the branch tip, `hash-object`, a private index (`read-tree`,
+  `update-index`, `write-tree`), `commit-tree -p <the tip that was read>`, then
+  a plain push. That parent is what makes a concurrent push fail rather than
+  be overwritten; never add `--force`. A refused push is an error telling the
+  user to re-run -- push-race retry stays cut (see above).
+- **Fetch and push by URL, not a configured remote**, with
+  `+refs/heads/*:refs/heads/*`, so the cache follows `builtin.ini` if a URL
+  changes and always mirrors the server. The default branch is the cache's
+  HEAD, recorded by `clone --bare`.
+- **`--dry-run` and `status` fetch.** That is a read from GitLab, not a
+  change, and without it they would show a stale cache. Nothing is committed.
+- **The config is compiled in from `builtin.ini`**, at the author's request:
+  one config for everyone, so a file on disk only added a setup step and a way
+  to go stale. `--config FILE` is the only override, kept for tests.
 - **Shorthand lives in the config, not the code.** It used to be a table in the
   source. `[<repo>.aliases]` keeps site conventions out of the tool, and the
   `--help` epilog is built from whatever config is loaded so the two cannot
   drift.
-- **`[general] default` is commented out in the shipped config.** A name that
+- **`[general] default` is commented out in `builtin.ini`.** A name that
   matches nothing is usually a typo or a half-written glob, and an error naming
   the configured repos is more use than quietly acting on one of them.
 - **The same shorthand defined in two repos is an error**, not first-wins.
@@ -107,17 +118,17 @@ Do not silently reverse these:
 - **`start` writes `enabled: true` explicitly** rather than deleting the key,
   even though an absent key means running. It matches how the files are already
   kept and leaves no doubt what state a service was put in.
-- **git: `pull --ff-only`, and a pathspec on both `add` and `commit`.** Never
-  merge or rebase on the user's behalf; never sweep up their other staged work.
+- **git: never merge, rebase or force-push on the user's behalf.** The commit
+  changes `apps/values.yaml` and nothing else in the tree.
 - **`restart` and `exec` short-circuit before repo resolution.** They act on the
-  cluster, not the repo: no pull, no edit, no commit, and nothing for `-r`,
-  `--no-git` or the current directory to influence. Resist the pull to route
+  cluster, not the repo: no fetch, no edit, no commit, and nothing for `-r`
+  to influence. Resist the pull to route
   them through `resolve_repo` for consistency's sake — there is no file to find.
   The `ACTIONS` table in `cli.h` is what makes an action work this way: a script
-  name instead of null, and a script beside the tool, is all a new one needs.
+  name instead of null, and the script added to `HELPERS` in the Makefile and
+  to `embedded_helper()` in `helpers.cpp`, is all a new one needs.
 - **`status` is the exception, at the author's request.** It is read-only, so
-  it takes globs, aliases and `--node`, and it reads `values.yaml` (without
-  pulling) to expand them and show `enabled`/`targetRevision`. The script
+  it takes globs, aliases and `--node`, and it fetches and reads `values.yaml` to expand them and show `enabled`/`targetRevision`. The script
   prints one line per pod and the C++ lines them up against the services asked
   for, so a stopped IOC still gets a row. Keep the script's column order in
   step with the parser in `main.cpp`.
@@ -140,12 +151,11 @@ Do not silently reverse these:
   purpose.** Factoring it into a third, sourced-only file was offered and
   turned down: each script stays independently runnable and obvious. If a bug
   is found in that block, fix it in all of them.
-- **The shipped scripts are found through `/proc/self/exe`, not `argv[0]`.**
-  Installing the tool by symlinking it onto PATH is documented, and that gives
-  the real file rather than the link, so the sibling is looked for next to the
-  binary. `tests/test_tool.py` covers this; the check is worthless unless the
-  symlink lives in a directory with no helper scripts in it, which is how it was
-  first written and why it initially passed under the broken version too.
+- **The helper scripts are embedded in the binary**, run with `bash -c`, not
+  found on disk. Installing is copying one file, and a copy or symlink anywhere
+  works. `[general] restart_script` etc. remain as an override for running a
+  modified copy. `tests/test_tool.py` runs a copied binary with nothing beside
+  it to prove no sibling is needed.
 - **Errors exit 1, a bad command line exits 2.** `fail()` for the first,
   `usage_error()` for the second. That split came from argparse and is worth
   keeping: a script can tell "you typed it wrong" from "it would not do it".
@@ -155,7 +165,7 @@ Do not silently reverse these:
 - Inline service mappings (`name: {enabled: true}`) are recognised but rejected
   for every editing action, including deploy, so they cannot become duplicates.
 - `[match]` compares against the SERVICE argument as typed, so a half-written
-  glob like `sr2*` identifies no repo. Documented in README.md and config.ini.
+  glob like `sr2*` identifies no repo. Documented in README.md and builtin.ini.
 - Exact lookup and glob selection share service boundaries. Nested names are
   not services, and only direct child settings are rewritten. Blank lines and
   comments within a service do not terminate it.
@@ -186,22 +196,23 @@ tests/test_tool.py`.
 It checks that every edit still parses as YAML and that **only the intended
 `(service, key)` pairs differ** from the original — compared with a real parser,
 not by eye — plus service order, comment count, idempotency, repo resolution,
-and the git flow against a local bare remote.
+and the git flow against a local bare remote: the commit's message, author,
+parent and contents, someone else's push between fetches, and a refused push.
 
 If you add behaviour, add a check for it. If you change behaviour, expect a
 failure and decide deliberately whether the test or the code is wrong.
 
-**Tests must never touch the real deployment repos.** Fixtures are copied into a
-temp directory and the tool is pointed at the copy with a generated `--config`;
-because a repo can be inferred from the service name, setting only the working
-directory is not enough to contain it.
+**Tests must never touch the real deployment repos.** Each fixture is
+committed to a temp bare repo standing in for GitLab, the tool is pointed at it
+with a generated `--config`, and `XDG_CACHE_HOME` keeps its clone in the temp
+directory. Always pass `--config`: without it the built-in config names the real
+GitLab repos (only `--list`, which contacts nothing, is run that way).
 
 **Nor the real cluster.** The cluster checks replace each helper script with a
 stub that records its own action name and its argv — the action name is what
-catches a run that reached the wrong script. The sibling-lookup checks run
-against a *copy* of the tool in a temp directory with the stubs beside it,
-because exercising that path against the real checkout would run the real
-script and delete a real pod. One case in the suite got this wrong for a while:
+catches a run that reached the wrong script. The embedded-script checks run a
+*copy* of the tool in a temp directory with stubbed kubectl on PATH, because
+exercising that path against the real cluster would delete a real pod. One case in the suite got this wrong for a while:
 `case("bad action", ["restart", ...])` was written before `restart` was an
 action, and once it was, that case ran the real `ioc-restart` and passed only
 because the machine had no kubectl. It now names an action that does not exist.
@@ -214,12 +225,10 @@ coverage at all.
 
 ## Config in this repo
 
-The repo ships `config.ini.example`, carrying the author's own paths. It is a
-starting point to copy to `~/.config/deployment-repo-tool/config.ini`. The
-`.example` suffix is deliberate: the lookup chain only ever names `config.ini`,
-so a clone of this repo is inert and cannot be made to push to someone else's
-checkouts. `config.ini` is gitignored — never commit one. Do not assume the
-example's paths exist on any other machine.
+`builtin.ini` is the config, compiled into the binary by `build-tools/embed.cpp`
+as the helper scripts are. No config file is looked for at run time.
+`config.ini` stays gitignored so an old local copy is never committed; nothing
+reads it.
 
-The test suite reads `config.ini.example` for `[match]` and the alias sections,
-so renaming or dropping it breaks `tests/test_tool.py`.
+The test suite reads `builtin.ini` for `[match]` and the alias sections, so
+renaming or dropping it breaks `tests/test_tool.py`.

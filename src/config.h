@@ -52,13 +52,12 @@ class Config {
 
 struct LoadedConfig {
     Config config;
-    std::string path;  // empty when no config file was found
+    std::string path;  // the --config file, or "built in"
 };
 
-// The first of these that exists: the --config argument, $DEPLOYMENT_REPO_CONFIG,
-// $XDG_CONFIG_HOME/deployment-repo-tool/config.ini (~/.config when unset), then
-// config.ini beside the tool. A config file that is simply not there is not an
-// error -- but one named with --config that is missing is.
+// The --config file when one is given, which must exist; otherwise builtin.ini,
+// compiled in. No other file is looked for: the config ships inside the binary,
+// so there is nothing on disk to copy, go stale or be picked up by accident.
 LoadedConfig read_config(const std::string &given);
 
 // A comma or space separated list of globs, as [match] and the alias sections

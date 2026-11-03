@@ -38,7 +38,7 @@ const LongOption LONG_OPTIONS[] = {
     {"version", false},
     {"force-sync", false}, {"argocd-app", true},
     {"help", false},   {"repo", true},   {"config", true},
-    {"list", false},   {"no-git", false}, {"dry-run", false},
+    {"list", false},   {"dry-run", false},
     {"node", true},
 };
 const size_t LONG_OPTION_COUNT = sizeof(LONG_OPTIONS) / sizeof(LONG_OPTIONS[0]);
@@ -53,7 +53,7 @@ std::string usage_line() {
     // Continuation lines line up under the first argument, as argparse's did.
     const std::string indent(std::string("usage: ").size() + program_name.size() + 1, ' ');
     return "usage: " + program_name + " [-h] [--version] [-r REPO] [--config PATH] [--list]\n" +
-           indent + "[--no-git] [--dry-run] [--force-sync] [--argocd-app APP]\n" + indent + "[--node NODE]\n" + indent + "[{" + action_choices(",") +
+           indent + "[--dry-run] [--force-sync] [--argocd-app APP]\n" + indent + "[--node NODE]\n" + indent + "[{" + action_choices(",") +
            "}] [SERVICE] [revision]";
 }
 
@@ -73,11 +73,13 @@ const char *DESCRIPTION =
     "    dep status all -r va\n"
     "    dep status --node NODE\n"
     "\n"
-    "start, stop and deploy edit apps/values.yaml, then pull, commit and push.\n"
+    "start, stop and deploy fetch the repo, edit apps/values.yaml, commit and\n"
+    "push. No checkout is needed: the tool keeps its own clone of each repo\n"
+    "in ~/.cache/deployment-repo-tool.\n"
     "restart and exec change nothing at all: they act on the running pod, and are\n"
     "the ArgoCD web UI's pod delete and terminal.\n"
     "status changes nothing either: it shows each service's enabled and\n"
-    "targetRevision in the local checkout, and the node and state of its pod.\n"
+    "targetRevision in the repo, and the node and state of its pod.\n"
     "\n"
     "For start, stop, deploy and status the service can be a glob, selecting\n"
     "every matching entry (in one commit, for the first three). Quote it, or the\n"
@@ -87,8 +89,7 @@ const char *DESCRIPTION =
     "\n"
     "Which repo is edited comes from the config (see --list), the first of:\n"
     "\n"
-    "    -r, either a config key or a path to a checkout\n"
-    "    the current directory, if it is inside a *-deployment checkout\n"
+    "    -r, a config key\n"
     "    the service name: its shorthand's repo, else the [match] patterns\n"
     "    [general] default\n"
     "\n"
@@ -99,12 +100,10 @@ const char *OPTION_HELP =
     "options:\n"
     "  -h, --help            show this help message and exit\n"
     "  --version             show the build's Git tag or commit and exit\n"
-    "  -r REPO, --repo REPO  which deployment repo: a key from the config, or a\n"
-    "                        path to a checkout\n"
-    "  --config PATH         config file to use\n"
+    "  -r REPO, --repo REPO  which deployment repo: a key from the config\n"
+    "  --config PATH         use this config file, not the built-in one\n"
     "  --list                show the configured repos and exit\n"
-    "  --no-git              edit the file only: no pull, commit or push\n"
-    "  --dry-run             show the change, write nothing\n"
+    "  --dry-run             fetch and show the change; commit and push nothing\n"
     "  --force-sync          manually sync parent and service apps after pushing;\n"
     "                        without an action, sync only (SERVICE required)\n"
     "  --argocd-app APP      override parent app (default: accelerator/<repo name>\n"
@@ -170,7 +169,6 @@ void store(Args *args, const std::string &name, const std::string &value) {
     else if (name == "argocd-app") args->argocd_app = value;
     else if (name == "config") args->config = value;
     else if (name == "list") args->list = true;
-    else if (name == "no-git") args->no_git = true;
     else if (name == "dry-run") args->dry_run = true;
     else if (name == "node") args->node = value;
 }

@@ -185,12 +185,3 @@ std::string current_directory() {
     }
     fail("cannot read the current directory");
 }
-
-std::string own_path() {
-    std::vector<char> buffer(4096);
-    const ssize_t length = readlink("/proc/self/exe", buffer.data(), buffer.size() - 1);
-    // Empty rather than fatal: the only caller can carry on and say that the
-    // helper script has to be named in the config instead.
-    if (length <= 0) return std::string();
-    return std::string(buffer.data(), static_cast<size_t>(length));
-}

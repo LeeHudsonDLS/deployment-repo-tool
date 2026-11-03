@@ -40,7 +40,6 @@ struct Args {
     bool help = false;
     bool version = false;
     bool list = false;
-    bool no_git = false;
     bool dry_run = false;
     bool force_sync = false;
     std::string argocd_app;

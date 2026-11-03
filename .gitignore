@@ -1,5 +1,5 @@
-# Your own config, copied from config.ini.example. Never committed: it holds
-# paths to your checkouts and would otherwise be picked up by anyone cloning.
+# Not read by the tool (builtin.ini is compiled in); kept ignored so an old
+# local copy is never committed.
 config.ini
 
 # Build output, including generated embedded helper contents.

@@ -71,6 +71,12 @@ $(GENERATED): $(HELPERS) $(EMBED) Makefile
 
 $(BUILD)/helpers.o: $(GENERATED)
 
+# The config is compiled in the same way; see builtin.ini.
+$(BUILD)/embedded_config.h: builtin.ini $(EMBED) Makefile
+	$(EMBED) builtin.ini > $@.tmp && mv $@.tmp $@
+
+$(BUILD)/config.o: $(BUILD)/embedded_config.h
+
 # Check every build: tags and dirty state can change without source timestamps.
 # Preserve the header timestamp when unchanged to avoid needless recompilation.
 $(BUILD)/version.h: FORCE | $(BUILD)

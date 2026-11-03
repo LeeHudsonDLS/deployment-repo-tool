@@ -1,14 +1,15 @@
 // Start, stop and deploy services in an ArgoCD "*-deployment" repo, and
 // restart or open a shell in a running one.
 //
-// start, stop and deploy edit the services block of apps/values.yaml, then
-// pull, commit and push. restart and exec change nothing: they hand the service
+// start, stop and deploy edit the services block of apps/values.yaml in the
+// tool's own clone of the repo, then commit and push (remote.h). restart and exec change nothing: they hand the service
 // name to a shell script that talks to the cluster, and are the ArgoCD web UI's
 // pod delete and terminal.
 //
 // This file is the flow -- what happens in what order. The parts it is made of
 // each live in their own header, and the reasoning behind them is written down
-// there: config.h for the ini file, repo.h for choosing a checkout, values.h
+// there: config.h for the ini file, repo.h for choosing a repo, remote.h for
+// reading and pushing it without a checkout, values.h
 // for the editing, glob.h and diff.h for the two standard library pieces python
 // had and C++ does not.
 
@@ -26,6 +27,7 @@
 #include "helpers.h"
 #include "paths.h"
 #include "process.h"
+#include "remote.h"
 #include "repo.h"
 #include "support.h"
 #include "values.h"
@@ -38,17 +40,6 @@ const char *verb(const std::string &action) {
     if (action == "start") return "Starting";
     if (action == "stop") return "Stopping";
     return "Deploying";
-}
-
-// Run git in the repo; any failure stops the tool. Output stays attached to the
-// terminal so progress and any credential prompt reach the user.
-void git(const std::string &root, const std::vector<std::string> &args) {
-    std::vector<std::string> argv;
-    argv.push_back("git");
-    argv.push_back("-C");
-    argv.push_back(root);
-    argv.insert(argv.end(), args.begin(), args.end());
-    if (run(argv) != 0) fail("git " + join(args, " ") + " failed");
 }
 
 // Name the services for a message, without printing an essay for 'fe*'.
@@ -131,9 +122,8 @@ void print_table(const std::vector<std::vector<std::string>> &rows) {
 // status: where each service's pod is running, next to what the repo says.
 //
 // Unlike restart and exec it takes a glob or shorthand, because "which node is
-// everything on" is the question, and asking it changes nothing. That is also
-// why the repo is read but not pulled: a status check that rewrites your
-// checkout would be a surprise. What it shows from Git is the local checkout.
+// everything on" is the question, and asking it changes nothing. The repo half
+// is fetched first, so it is what is on the server now.
 //
 // The cluster half is ioc-status, which prints one line per pod; this only
 // lines those up against the services asked for, so a stopped IOC still gets
@@ -148,12 +138,9 @@ void status(const Config &config, const Action &action, const Args &args) {
         script_args = {"--node", args.node};
     } else {
         const Repo repo = resolve_repo(config, args.repo, args.service);
-        check_repo(repo.root, repo.why);
-        std::cout << "repo    " << (repo.key.empty() ? "" : repo.key + "  ") << repo.root
-                  << "  (" << repo.why << "; local checkout, not pulled)\n";
-        lines = split_lines(read_file(path_join(repo.root, VALUES)));
-        Options aliases;
-        if (!repo.key.empty()) aliases = config.section(repo.key + ".aliases");
+        std::cout << "repo    " << repo.key << "  " << repo.url << "  (" << repo.why << ")\n";
+        lines = split_lines(fetch_values(repo.url).text);
+        const Options &aliases = config.section(repo.key + ".aliases");
         names = select(lines, args.service, aliases);
         script_args = names;
     }
@@ -251,10 +238,10 @@ int main(int argc, char **argv) {
     const Config &config = loaded.config;
     if (args.help) show_help(config);
 
-    if (args.force_sync && (args.no_git || args.list ||
+    if (args.force_sync && (args.list ||
                            args.action == "restart" || args.action == "exec" ||
                            args.action == "status")) {
-        usage_error("--force-sync requires start, stop, deploy or no action; incompatible with --no-git and --list");
+        usage_error("--force-sync requires start, stop, deploy or no action; incompatible with --list");
     }
     if (!args.argocd_app.empty() && !args.force_sync) {
         usage_error("--argocd-app requires --force-sync");
@@ -291,7 +278,7 @@ int main(int argc, char **argv) {
     }
 
     // These act on the cluster, not the repo, so they take none of what
-    // follows: no repo to pick, nothing to pull, edit, commit or push. The
+    // follows: no repo to pick, nothing to fetch, edit, commit or push. The
     // third positional is deploy's revision and means nothing here; catching it
     // beats silently ignoring a mistyped command.
     if (action && action->script) {
@@ -303,16 +290,14 @@ int main(int argc, char **argv) {
     }
 
     const Repo repo = resolve_repo(config, args.repo, args.service);
-    check_repo(repo.root, repo.why);
-    std::cout << "repo    " << (repo.key.empty() ? "" : repo.key + "  ") << repo.root
-              << "  (" << repo.why << ")\n";
-    const std::string path = path_join(repo.root, VALUES);
+    std::cout << "repo    " << repo.key << "  " << repo.url << "  (" << repo.why << ")\n";
+    const Options &aliases = config.section(repo.key + ".aliases");
     std::string parent = !args.argocd_app.empty() ? args.argocd_app :
         config.get(repo.key + ".argocd", "app");
-    // Infer only from the checkout selected and validated above, never from
-    // a service pattern or a config key which may name a different directory.
+    // Infer from the repo's own name, never from a service pattern or a
+    // config key, which may be called something else.
     if (args.force_sync && parent.empty()) {
-        const std::string directory = basename(repo.root);
+        const std::string directory = repo_name(repo.url);
         const std::string suffix = "-deployment";
         if (ends_with(directory, suffix) && directory.size() > suffix.size()) {
             parent = "accelerator/" + directory.substr(0, directory.size() - suffix.size());
@@ -320,8 +305,8 @@ int main(int argc, char **argv) {
     }
     if (args.force_sync) check_sync_names(parent, {});
     if (sync_only) {
-        const auto targets = select(split_lines(read_file(path)), args.service,
-                                    config.section(repo.key + ".aliases"));
+        const auto targets = select(split_lines(fetch_values(repo.url).text), args.service,
+                                    aliases);
         check_sync_names(parent, targets);
         if (!args.dry_run) prepare_argocd(parent);
         sync_apps(parent, targets, args.dry_run, false);
@@ -329,24 +314,15 @@ int main(int argc, char **argv) {
     }
     if (args.force_sync && !args.dry_run) prepare_argocd(parent);
 
-    // Pull before reading, so the edit is made against what is really deployed.
-    // --ff-only: if the branch has diverged, stop and let a human sort it out
-    // rather than quietly building a merge on top of someone else's work.
-    if (!(args.no_git || args.dry_run)) git(repo.root, {"pull", "--ff-only"});
-
-    if (args.force_sync && !args.dry_run &&
-        run({"git", "-C", repo.root, "diff", "--quiet", "HEAD", "--", VALUES}) != 0) {
-        fail("--force-sync requires apps/values.yaml to have no uncommitted changes");
-    }
-
-    Lines lines = split_lines(read_file(path));
+    // Fetched fresh every time, so the edit is made against what is really
+    // deployed, and the commit goes on top of exactly what was read.
+    const Snapshot read = fetch_values(repo.url);
+    Lines lines = split_lines(read.text);
     // If the file does not end in a newline, appending an entry would join it
     // onto the last line.
     if (!lines.empty() && !ends_with(lines.back(), "\n")) lines.back() += "\n";
     const Lines before = lines;
 
-    Options aliases;
-    if (!repo.key.empty()) aliases = config.section(repo.key + ".aliases");
     const std::vector<std::string> targets = select(lines, args.service, aliases);
     if (args.force_sync) check_sync_names(parent, targets);
     if (targets.size() > 1) {
@@ -380,11 +356,9 @@ int main(int argc, char **argv) {
     if (lines == before) {
         std::cout << "nothing to do - " << summarise(targets, args.service)
                   << " already as asked for" << std::endl;
-        if (args.force_sync) {
-            // Retry a failed push too, without making an empty commit.
-            if (!args.dry_run) git(repo.root, {"push"});
-            sync_apps(parent, targets, args.dry_run);
-        }
+        // Nothing is ever left unpushed, so a retry after a failed sync is
+        // just the sync.
+        if (args.force_sync) sync_apps(parent, targets, args.dry_run);
         return 0;
     }
     std::cout << unified_diff(before, lines, VALUES, VALUES);
@@ -394,20 +368,10 @@ int main(int argc, char **argv) {
         std::cout.flush();
         return 0;
     }
-    write_file(path, join(lines, ""));
-    if (args.no_git) {
-        std::cout.flush();
-        return 0;
-    }
-
-    // Both commands name the file, so anything else staged in the repo is left
-    // out of this commit.
     std::string message =
         format("%s %s", verb(args.action), summarise(targets, args.service).c_str());
     if (args.action == "deploy") message += " on " + args.revision;
-    git(repo.root, {"add", "--", VALUES});
-    git(repo.root, {"commit", "-m", message, "--", VALUES});
-    git(repo.root, {"push"});
+    push_values(repo.url, read, join(lines, ""), message);
     if (args.force_sync) sync_apps(parent, targets, false);
     return 0;
 }

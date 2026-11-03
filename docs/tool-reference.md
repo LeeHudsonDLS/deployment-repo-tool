@@ -21,7 +21,9 @@ ioc stop 'fe15*' --force-sync      # Batch stop with immediate sync
 ## What it does
 
 `ioc` edits the `services:` block in `apps/values.yaml` of a Diamond ArgoCD
-`*-deployment` repo, then pulls, commits and pushes the change. The edits
+`*-deployment` repo on GitLab, then commits and pushes the change. No checkout
+is needed: the tool fetches into its own bare clone of each repo under
+`~/.cache/deployment-repo-tool/` and commits from there. The edits
 preserve comments, key order, and spacing — the file is edited as text, never
 parsed and re-dumped by a YAML library.
 
@@ -42,28 +44,34 @@ kubectl.
 
 | Flag | Purpose |
 |---|---|
-| `-r REPO`, `--repo REPO` | Select a configured repo by key or path |
-| `--config PATH` | Use a specific configuration file |
-| `--list` | Show configured repos and whether their paths exist |
-| `--dry-run` | Preview edits without touching files, Git, or the cluster |
-| `--no-git` | Edit the values file only — no pull, commit, or push |
+| `-r REPO`, `--repo REPO` | Select a configured repo by key |
+| `--config PATH` | Use this config file instead of the built-in one |
+| `--list` | Show configured repos and whether the tool has cloned them yet |
+| `--dry-run` | Fetch and preview edits; no commit, push or cluster contact |
 | `--force-sync` | Push then manually sync via ArgoCD |
 | `--argocd-app APP` | Override the inferred ArgoCD app name (requires `--force-sync`) |
-
-`--force-sync` and `--no-git` are mutually exclusive.
 
 ---
 
 ## Installation
 
 ```bash
-make                    # Builds the binary
-install -m 755 ioc ~/bin/ioc   # Install it
+./install.sh            # Clean build, then install to ~/bin/ioc
+./install.sh DIR        # Or to DIR/ioc
 ```
 
-The binary embeds three helper scripts (`ioc-restart`, `ioc-exec`,
-`ioc-argocd`), so only `ioc` needs to be installed. Symlinks and aliases work
-too — the helpers are resolved via `/proc/self/exe`.
+The script removes any previous install, runs `make clean` and `make`, and
+warns if the directory is not on your PATH. Run it again after pulling or
+editing `builtin.ini`.
+
+The binary embeds the four helper scripts (`ioc-restart`, `ioc-exec`,
+`ioc-argocd`, `ioc-status`) and `builtin.ini`, so only `ioc` needs to be
+installed. A copy, symlink or alias works anywhere: nothing is looked for
+beside it.
+
+**Runtime requirements:** git, with an SSH key on your GitLab account that can
+push to the deployment repos. Commits use your own git `user.name` and
+`user.email`.
 
 **Build requirements:** C++17 compiler and `make`. GCC 8.5 on RHEL8 is sufficient. No third-party dependencies.
 
@@ -71,24 +79,18 @@ too — the helpers are resolved via `/proc/self/exe`.
 
 ## Configuration
 
-Copy `config.ini.example` to `~/.config/deployment-repo-tool/config.ini` and
-edit the paths. The example file itself is never loaded — the `.example` suffix
-is deliberate so cloning this repo cannot accidentally push to someone else's
-checkouts.
+The configuration is `builtin.ini` in this repo, compiled into the binary by
+`make`. No config file is read from disk at run time: to change it, edit
+`builtin.ini` and run `./install.sh` again. `--config PATH` uses a file instead
+(it must exist; there is no fallback), for trying a change and for the tests.
+`ioc --list` shows `config  built in` and each repo.
 
-The tool searches for config in this order:
-
-1. `--config PATH` (must exist, no fallback)
-2. `$DEPLOYMENT_REPO_CONFIG`
-3. `$XDG_CONFIG_HOME/deployment-repo-tool/config.ini`
-4. `config.ini` beside the binary
-
-### Minimal config
+### Format
 
 ```ini
 [repos]
-fe = ~/work/fe-deployment
-va = ~/work/va-deployment
+fe = git@gitlab.diamond.ac.uk:controls/containers/accelerator/fe-deployment.git
+va = git@gitlab.diamond.ac.uk:controls/containers/accelerator/va-deployment.git
 
 [match]
 fe = fe*
@@ -101,7 +103,7 @@ cs  = fe[0-9][0-9][ijkb]-cs-ioc-0[1-9]
 
 ### Configuration sections
 
-- **`[repos]`** — Maps shorthand keys to checkout paths.
+- **`[repos]`** — Maps repo keys to clone URLs.
 - **`[match]`** — Maps repo keys to service-name patterns for automatic repo
   resolution. Patterns are compared against the service argument *as typed*.
 - **`[<repo>.aliases]`** — Defines reusable glob aliases per repo. Duplicate
@@ -113,13 +115,12 @@ cs  = fe[0-9][0-9][ijkb]-cs-ioc-0[1-9]
 
 ### Repo resolution order
 
-When a repo isn't given with `-r`, the tool selects one by:
+When a repo isn't given with `-r KEY`, the tool selects one by:
 
-1. The deployment checkout containing the **current directory** (only if it has
-   `apps/values.yaml` — this also catches the tool's own source tree, so the
-   directory must be a valid deployment checkout).
-2. The service argument as an alias, then the `[match]` patterns.
-3. `[general] default` (if uncommented).
+1. The service argument as an alias, then the `[match]` patterns.
+2. `[general] default` (if uncommented).
+
+The directory you run it from makes no difference.
 
 The tool prints the selected repo and the reason before acting.
 
@@ -131,14 +132,19 @@ pattern or the `-r` flag.
 
 ## Git behavior
 
-- Pulls with `--ff-only` before editing. A diverged branch stops the command.
-- Stages and commits **only** `apps/values.yaml` with a pathspec, leaving other
-  staged work untouched.
+- Keeps a bare clone (no working tree) of each repo at
+  `~/.cache/deployment-repo-tool/<repo>.git` (`$XDG_CACHE_HOME` if set). The
+  first command clones it; every command after that fetches. Deleting it is
+  always safe.
+- Fetches before reading, so the edit is made against what is on GitLab now.
+- Commits **only** `apps/values.yaml`, on top of exactly the commit it read,
+  and pushes to the default branch. The rest of the repo is carried over.
+- If someone pushed in between, the push is refused and nothing changes; run
+  the command again. It never merges, rebases or force-pushes.
 - Preserves comments, key order, and blank lines in the file.
 - Uses descriptive messages like `Stopping fe03i-mo-ioc-01`.
 - **Makes no empty commit** when the requested settings already match what's in
   Git.
-- Uses an atomic write strategy to avoid leaving partially written files.
 
 ---
 
@@ -161,7 +167,6 @@ windows). With `--force-sync`, the tool:
 - Your account needs read and sync permissions on the apps.
 - The project's sync windows must allow manual syncs.
 - The child apps must match service names and share the parent's namespace.
-- No uncommitted changes to `apps/values.yaml` are allowed.
 
 ### Parent app inference
 
@@ -236,10 +241,9 @@ failure cannot silently report success. The scripts replace the tool entirely
 
 ## Design decisions
 
-- **Current directory beats inference.** If you're inside a `*-deployment`
-  checkout, that's the repo — even when `[match]` would point elsewhere.
-  Inference-first was tried and rejected: standing in your own clone and having
-  the tool edit a different one is a foot-gun.
+- **No checkouts.** The tool edits through its own cached bare clone, so
+  there are no per-user paths, no stale or dirty working trees and no diverged
+  branches. The config is the same for everyone and is compiled in.
 - **Nothing-to-do is exit 0.** The tool is safe to re-run and avoids empty
   commits.
 - **Only `deploy` creates entries.** `start`/`stop` on an unknown service is
@@ -247,7 +251,7 @@ failure cannot silently report success. The scripts replace the tool entirely
 - **`start` writes `enabled: true` explicitly** rather than deleting the key,
   even though a missing key means running. It matches how the files are
   already kept.
-- **`[general] default` is commented out in the shipped config.** A name that
+- **`[general] default` is commented out in `builtin.ini`.** A name that
   matches nothing is usually a typo.
 - **All cluster knowledge stays in the shell scripts.** The C++ tool locates a
   script and passes one name. The scripts remain runnable on their own.
@@ -269,11 +273,12 @@ throwaway environment — nothing to install globally. Without uv:
 uvx python3 tests/test_tool.py
 ```
 
-Tests use temporary repos, local Git remotes, and stubbed kubectl/ArgoCD commands.
+Tests use temporary bare repos in place of GitLab, a temporary cache, and
+stubbed kubectl/ArgoCD commands.
 **They never touch real deployment repos or clusters.**
 
-Helper scripts live alongside the binary as source files (`ioc-restart`,
-`ioc-exec`, `ioc-argocd`). Edit them and run `make` to regenerate the embedded
+Helper scripts live in the repo as source files (`ioc-restart`, `ioc-exec`,
+`ioc-argocd`, `ioc-status`). Edit them and run `make` to regenerate the embedded
 versions. The source scripts also remain runnable for development.
 
 ### Architecture
@@ -284,8 +289,9 @@ One concern per module, with reasoning in the header comments:
 |---|---|
 | `src/main.cpp` | Program flow |
 | `src/cli.*` | CLI parsing and action table |
-| `src/config.*` | INI config file parsing |
+| `src/config.*` | INI parsing, and loading the built-in config |
 | `src/repo.*` | Deployment repo resolution |
+| `src/remote.*` | The cached bare clone: fetch, commit, push |
 | `src/values.*` | Editing the services block |
 | `src/glob.*` | Shell-style name matching |
 | `src/diff.*` | Unified diff generation |

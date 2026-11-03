@@ -1,12 +1,9 @@
 // Path handling, matching what python's os.path did for the original.
 //
-// These are all *lexical* operations, deliberately: expand() must not resolve
-// symlinks, because a configured [repos] path is compared against the current
-// directory to work out whether you are standing in that checkout, and
-// resolving one side but not the other would stop them matching. <filesystem>
-// is avoided as well -- it is a separate library on the gcc 8 that ships with
-// RHEL8, and the tool being buildable with nothing but a compiler is the whole
-// reason it is not python any more.
+// These are all *lexical* operations: nothing here needs the disk's view of a
+// path, only its spelling. <filesystem> is avoided -- it is a separate library
+// on the gcc 8 that ships with RHEL8, and the tool being buildable with nothing
+// but a compiler is the whole reason it is not python any more.
 #pragma once
 
 #include <string>
@@ -37,9 +34,3 @@ bool is_file(const std::string &path);
 bool is_dir(const std::string &path);
 
 std::string current_directory();
-
-// Where this binary really is, symlinks resolved. The two helper scripts ship
-// beside the tool and are found relative to this, so it has to be the real
-// file: installing by symlinking onto PATH is documented, and looking next to
-// the symlink would find nothing.
-std::string own_path();

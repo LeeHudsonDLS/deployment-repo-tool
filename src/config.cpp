@@ -2,12 +2,11 @@
 
 #include <cstdlib>
 
+#include "embedded_config.h"  // builtin.ini, as helper_1
 #include "paths.h"
 #include "support.h"
 
 namespace {
-
-const char *CONFIG_NAME = "config.ini";
 
 bool is_comment(const std::string &stripped) {
     return !stripped.empty() && (stripped[0] == '#' || stripped[0] == ';');
@@ -140,28 +139,10 @@ LoadedConfig read_config(const std::string &given) {
         loaded.path = given;
         return loaded;
     }
-    const char *from_environment = std::getenv("DEPLOYMENT_REPO_CONFIG");
-    const char *xdg = std::getenv("XDG_CONFIG_HOME");
-    const std::string home = (xdg && *xdg) ? std::string(xdg) : expanduser("~/.config");
-
-    std::vector<std::string> candidates;
-    if (from_environment && *from_environment) candidates.push_back(from_environment);
-    candidates.push_back(path_join(path_join(home, "deployment-repo-tool"), CONFIG_NAME));
-    // Last resort: a config.ini next to the binary. The repo ships only
-    // config.ini.example, so a fresh clone finds nothing here and cannot push
-    // to anyone else's checkouts.
-    const std::string here = own_path();
-    if (!here.empty()) candidates.push_back(path_join(dirname(here), CONFIG_NAME));
-
-    for (const std::string &candidate : candidates) {
-        if (!is_file(candidate)) continue;
-        LoadedConfig loaded;
-        loaded.config.parse(read_file(candidate), candidate);
-        loaded.path = candidate;
-        return loaded;
-    }
-
-    return LoadedConfig();
+    LoadedConfig loaded;
+    loaded.config.parse(helper_1, "builtin.ini");
+    loaded.path = "built in";
+    return loaded;
 }
 
 std::vector<std::string> patterns(const std::string &value) { return split_list(value); }

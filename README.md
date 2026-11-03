@@ -1,8 +1,11 @@
 # deployment-repo-tool
 
 `ioc` starts, stops and deploys IOCs and other services by updating a Diamond
-Argo CD deployment repository. It pulls, edits `apps/values.yaml`, shows the
-diff, commits and pushes. Add `--force-sync` to apply the change during a run.
+Argo CD deployment repository on GitLab. It fetches the repo, edits
+`apps/values.yaml`, shows the diff, commits and pushes. You do not need a
+checkout: the tool keeps its own clone of each repo in
+`~/.cache/deployment-repo-tool/`. Add `--force-sync` to apply the change during
+a run.
 
 It can also restart a running IOC or open a shell in its pod.
 
@@ -11,13 +14,19 @@ It can also restart a running IOC or open a shell in its pod.
 Build with a C++17 compiler and make (GCC 8.5 on RHEL8 is sufficient):
 
 ```bash
-make
-mkdir -p ~/bin
-install -m 755 ioc ~/bin/ioc
+./install.sh          # clean build, then install to ~/bin/ioc
+./install.sh DIR      # or to DIR/ioc
 ```
 
-Ensure `~/bin` is on your PATH. **Copy only `ioc`**: all three helper scripts
-are embedded in the binary. A symlink or alias to the built binary also works.
+It removes any previous install, runs `make clean` and `make`, and warns if the
+directory is not on your PATH. Run it again after pulling or editing
+`builtin.ini`. **Only `ioc` is installed**: the four helper scripts and the
+configuration are embedded in the binary. A copy, symlink or alias works
+anywhere.
+
+You need an SSH key on your GitLab account that can push to the deployment
+repos; `ssh -T git@gitlab.diamond.ac.uk` should greet you by name. Commits are
+made with your own `git config user.name` and `user.email`.
 
 `ioc --version` reports the Git version embedded at build time. A clean tagged
 checkout reports the tag (for example, `ioc v1.0.0`); commits after it report
@@ -38,7 +47,7 @@ Runtime requirements depend on the action:
 
 | Action | External tools |
 |---|---|
-| `start`, `stop`, `deploy` | Git and system `diff` (GNU diffutils) |
+| `start`, `stop`, `deploy`, `status` | Git (with SSH access to GitLab) and system `diff` (GNU diffutils) |
 | `--force-sync` | Bash and Argo CD |
 | `restart`, `exec`, `status` | Bash and kubectl |
 
@@ -46,9 +55,7 @@ The binary needs a compatible Linux architecture and C runtime. Build on the
 oldest system you need to support. The build links the C++ runtime statically
 when available, and otherwise uses the shared runtime.
 
-Copy `config.ini.example` to `~/.config/deployment-repo-tool/config.ini` and
-edit the checkout paths. The example file itself is never loaded. See
-[Configuration](#configuration) for a minimal example.
+There is no configuration file to install: see [Configuration](#configuration).
 
 ## Common commands
 
@@ -79,22 +86,19 @@ ioc ACTION SERVICE [REVISION] [options]
 
 `start` and `stop` require an existing service. If the requested settings are
 already in Git, no new commit is made. With `--force-sync`, the tool still
-pushes and syncs, so the same command can retry a previous failure.
+syncs, so the same command can retry a previous failure.
 
 ### Options
 
 | Option | Purpose |
 |---|---|
-| `-r REPO`, `--repo REPO` | Select a configured repo key or a checkout path |
-| `--config PATH` | Use a specific configuration file |
-| `--list` | Show configured repos and whether their paths exist |
-| `--dry-run` | Preview without writing files, running Git, loading modules or contacting the cluster |
-| `--no-git` | Edit the values file without pulling, committing or pushing |
+| `-r REPO`, `--repo REPO` | Select a configured repo by key |
+| `--config PATH` | Use this configuration file instead of the built-in one |
+| `--list` | Show configured repos and whether the tool has cloned them yet |
+| `--dry-run` | Fetch and preview; no commit, push, module loading or cluster contact |
 | `--force-sync` | Manually sync after pushing with `start`, `stop` or `deploy`; without a command, sync only |
 | `--argocd-app APP` | Override the inferred parent app; requires `--force-sync` |
 | `-h`, `--help` | Show usage and configured aliases |
-
-`--force-sync` cannot be combined with `--no-git`.
 
 Edits preserve comments and spacing, including blank lines within services.
 Only direct service settings are changed. Inline service mappings such as
@@ -143,17 +147,17 @@ ioc --force-sync 'fe03*' -r fe
 A service name, shorthand or quoted glob is required. This syncs only the
 selected child definitions and service apps.
 Repo selection and `--argocd-app` work as usual. Add `--dry-run` to preview.
-Local edits and unpushed commits are left alone; Argo CD uses its remote source.
+The repo is fetched to expand the selection, but nothing is committed.
 
-The tool resolves the deployment checkout first, then infers `accelerator/fe`
-from the directory name `fe-deployment`. The namespace defaults to
-`accelerator`. Parent selection uses this order:
+The tool resolves the repo first, then infers `accelerator/fe` from the repo
+name `fe-deployment` in its URL. The namespace defaults to `accelerator`.
+Parent selection uses this order:
 
 1. `--argocd-app APP`
 2. `[<repo>.argocd] app` in the configuration
-3. `accelerator/<directory name without -deployment>`
+3. `accelerator/<repo name without -deployment>`
 
-Use an override for a differently named checkout. A bare app name, such as
+Use an override for a differently named repo. A bare app name, such as
 `fe`, uses Argo CD's default Application namespace.
 
 ### Setup and login
@@ -163,7 +167,7 @@ Only with `--force-sync`, the tool:
 1. Uses `argocd` on PATH, or loads Diamond's `argocd/v2.14.10` module if missing.
 2. Checks login status with `argocd account get-user-info`.
 3. Starts SSO if the login is missing or expired, then checks the session again.
-4. Checks access to the parent app before any Git operations.
+4. Checks access to the parent app before fetching or committing anything.
 
 The default server is `hylas-argocd.diamond.ac.uk`; all server commands use
 `--grpc-web`. SSO launches a browser on the host running the tool, including
@@ -202,8 +206,6 @@ Your account needs permission to read and sync the apps, and the project's
 `--force-sync` requests a normal manual sync; it does not change project policy
 or use Argo CD's force-apply option.
 
-Uncommitted changes to `apps/values.yaml` are rejected when combining an editing
-command with `--force-sync`.
 If a sync fails, the pushed Git changes remain. Fix the reported problem and
 repeat the command. A timeout may leave the server-side operation running;
 check it before retrying.
@@ -230,13 +232,14 @@ or `exec_script` under `[general]` in the configuration.
 
 ## Where an IOC is running
 
-`status` shows which node each service's pod is on, next to what the local
-checkout says. It changes nothing and does not pull, so the Git columns are as
-of your last pull. It takes a name, quoted glob or alias, like `stop`:
+`status` shows which node each service's pod is on, next to what the repo
+says. It fetches first, so the Git columns are what is on GitLab now, and
+changes nothing. It takes a name, quoted glob or alias, like `stop`:
 
 ```text
 $ ioc status 'sr2[12]*' -r va
-repo    va  .../va-deployment  (-r va; local checkout, not pulled)
+repo    va  git@gitlab.diamond.ac.uk:.../va-deployment.git  (-r va)
+branch  main at 4f23b928
 SERVICE          ENABLED  REVISION  NODE         STATUS            RESTARTS  AGE
 sr20c-va-ioc-01  true     main      k8s-node-02  Running           0         9d
 sr21c-va-ioc-01  true     2026_sd3  k8s-node-07  Running           0         3d
@@ -266,10 +269,17 @@ It uses the same kubectl setup and `EC_TARGET` as `restart` and `exec`; set
 
 ## Configuration
 
+The configuration is `builtin.ini` in this repo, compiled into the binary by
+`make`. No configuration file is read at run time: to change it, edit
+`builtin.ini` and run `./install.sh` again. `--config PATH` uses a file instead
+(it must exist; there is no fallback), for trying a change and for the tests.
+The format is:
+
 ```ini
 [repos]
-fe = ~/work/fe-deployment
-va = ~/work/va-deployment
+# key = the repo's clone URL
+fe = git@gitlab.diamond.ac.uk:controls/containers/accelerator/fe-deployment.git
+va = git@gitlab.diamond.ac.uk:controls/containers/accelerator/va-deployment.git
 
 [match]
 fe = fe*
@@ -280,7 +290,7 @@ all = fe[0-9]*
 cs = fe[0-9][0-9][ijkb]-cs-ioc-0[1-9]
 
 [fe.argocd]
-# Optional: inferred from fe-deployment if omitted.
+# Optional: inferred from the repo name fe-deployment if omitted.
 app = accelerator/fe
 
 [general]
@@ -289,27 +299,19 @@ app = accelerator/fe
 # exec_script = /path/to/custom-exec
 ```
 
-The first available configuration file is used, in this order:
-
-1. `--config PATH`
-2. `$DEPLOYMENT_REPO_CONFIG`
-3. `$XDG_CONFIG_HOME/deployment-repo-tool/config.ini` (`~/.config` if unset)
-4. `config.ini` beside the binary
-
-Without a config, the tool can use the deployment checkout containing the
-current directory. `ioc --list` shows the loaded configuration and repo paths.
+`ioc --list` shows which configuration is loaded, each repo's URL, and whether
+the tool has cloned it yet.
 
 ### Repository selection
 
-The first matching rule selects the checkout:
+The first matching rule selects the repo. It does not matter which directory
+you run the tool from:
 
-1. `-r`: a configured key or a checkout path
-2. The deployment checkout containing the current directory
-3. The service's alias, otherwise the `[match]` patterns
-4. `[general] default`
+1. `-r`: a configured key
+2. The service's alias, otherwise the `[match]` patterns
+3. `[general] default`
 
-The tool prints the selected repo and the reason before acting. Parent-app
-inference happens only after that repo is resolved and validated.
+The tool prints the selected repo and the reason before acting.
 
 `[match]` tests the service argument exactly as typed. A partial glob such as
 `sr2*` may not match `sr*-va-ioc-*`; use `'sr2*-va-ioc-*'` or `-r va`.
@@ -317,10 +319,18 @@ If an alias is defined in more than one repo, use `-r` to disambiguate it.
 
 ## Git behavior
 
-- Pulls with `--ff-only` before editing; a diverged branch stops the command.
-- Stages and commits only `apps/values.yaml`, leaving other staged files out.
-- Preserves comments, key order and blank lines by editing the file in place.
-- Uses messages such as `Stopping fe03i-mo-ioc-01`.
+The tool keeps a bare clone of each repo (no working tree) at
+`~/.cache/deployment-repo-tool/<repo>.git`, or under `$XDG_CACHE_HOME` if set.
+The first command that needs a repo clones it; every command after that fetches.
+Nothing in the cache is yours to edit, and deleting it is always safe.
+
+- Fetches before reading, so every edit is made against what is on GitLab now.
+- Commits only `apps/values.yaml`, on top of exactly the commit it read, and
+  pushes it to the default branch. Everything else in the repo is untouched.
+- If someone else pushes in between, GitLab refuses the push and nothing
+  changes; run the command again. It never merges, rebases or force-pushes.
+- Preserves comments, key order and blank lines by editing the file as text.
+- Uses messages such as `Stopping fe03i-mo-ioc-01`, under your own git identity.
 - Makes no empty commit when settings already match.
 
 Services must use the block format shown in the example values files. Inline
@@ -346,7 +356,8 @@ make clean   # Remove the binary and generated build files
 suite. With Python and PyYAML already installed, you can instead run
 `python3 tests/test_tool.py` and `python3 tests/test_sync.py` after building.
 
-Tests use temporary deployment repositories, local Git remotes and stubbed
-kubectl/Argo CD commands. They exercise copied binaries without sibling scripts,
+Tests use temporary bare repositories in place of GitLab, a temporary cache
+and stubbed kubectl/Argo CD commands. They exercise copied binaries with
+nothing beside them,
 configured helper overrides, sync ordering, login recovery and failure handling.
 No real deployment repos or clusters are changed.
